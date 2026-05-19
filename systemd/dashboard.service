@@ -1,0 +1,19 @@
+[Unit]
+Description=Trading Bot Dashboard — Streamlit UI
+Documentation=https://github.com/your-repo
+After=network-online.target ops-api.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=root
+WorkingDirectory=/opt/trading-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/trading-bot/.venv/bin/python -m streamlit run dashboard/app.py --server.port 8501 --server.headless true
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/trading-bot/dashboard.log
+StandardError=append:/var/log/trading-bot/dashboard.log
+
+[Install]
+WantedBy=multi-user.target
