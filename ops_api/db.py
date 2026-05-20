@@ -11,6 +11,7 @@ import contextlib
 import json
 import sqlite3
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -241,6 +242,17 @@ class DatabaseManager:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
+    def _fetch_one(self, sql: str, params: tuple = ()) -> dict | None:
+        conn = self._connect()
+        row = conn.execute(sql, params).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def _fetch_all(self, sql: str, params: tuple = ()) -> list[dict]:
+        conn = self._connect()
+        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
     def init_schema(self) -> None:
         """Create all tables and indexes if they don't exist."""
         conn = self._connect()
@@ -264,6 +276,27 @@ class DatabaseManager:
                     conn.execute(
                         f"ALTER TABLE {table} ADD COLUMN data_source TEXT NOT NULL DEFAULT 'production'"
                     )
+
+            # Positions table (Phase 4)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS positions (
+                    id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    quantity INTEGER NOT NULL DEFAULT 0,
+                    entry_price REAL NOT NULL DEFAULT 0.0,
+                    current_price REAL NOT NULL DEFAULT 0.0,
+                    realized_pnl REAL NOT NULL DEFAULT 0.0,
+                    unrealized_pnl REAL NOT NULL DEFAULT 0.0,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    strategy_id TEXT DEFAULT '',
+                    opened_at TEXT NOT NULL,
+                    closed_at TEXT,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_open_symbol ON positions(symbol) WHERE status = 'open'")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status)")
 
             conn.commit()
         finally:
@@ -840,6 +873,157 @@ class DatabaseManager:
             return dict(row) if row else None
         finally:
             conn.close()
+
+    # ── Positions (Phase 4) ──────────────────────────────────────────
+
+    def upsert_open_position(self, symbol: str, side: str, quantity: int,
+                             entry_price: float, strategy_id: str = "") -> dict:
+        """UPSERT an open position for a symbol. Returns the row as dict."""
+        now = datetime.utcnow().isoformat()
+        pos_id = str(uuid.uuid4())
+        conn = self._connect()
+        try:
+            conn.execute("""
+                INSERT INTO positions (id, symbol, side, quantity, entry_price,
+                    current_price, realized_pnl, unrealized_pnl, status,
+                    strategy_id, opened_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0, 'open', ?, ?, ?)
+                ON CONFLICT(symbol) WHERE status = 'open'
+                DO UPDATE SET
+                    side = excluded.side,
+                    quantity = excluded.quantity,
+                    entry_price = excluded.entry_price,
+                    current_price = excluded.current_price,
+                    strategy_id = excluded.strategy_id,
+                    updated_at = excluded.updated_at
+            """, (pos_id, symbol, side, quantity, entry_price,
+                  entry_price, strategy_id, now, now))
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_position_by_symbol(symbol)
+
+    def close_position(self, symbol: str, exit_price: float) -> dict:
+        """Close an open position. Computes and stores realized PnL."""
+        now = datetime.utcnow().isoformat()
+        open_pos = self.get_position_by_symbol(symbol)
+        if not open_pos:
+            raise ValueError(f"No open position for {symbol}")
+        direction = 1 if open_pos["side"] == "LONG" else -1
+        realized = (exit_price - open_pos["entry_price"]) * open_pos["quantity"] * direction
+        conn = self._connect()
+        try:
+            conn.execute("""
+                UPDATE positions SET
+                    status = 'closed',
+                    closed_at = ?,
+                    current_price = ?,
+                    realized_pnl = realized_pnl + ?,
+                    updated_at = ?
+                WHERE id = ? AND status = 'open'
+            """, (now, exit_price, realized, now, open_pos["id"]))
+            conn.commit()
+        finally:
+            conn.close()
+        return self._fetch_one("SELECT * FROM positions WHERE id = ?", (open_pos["id"],))
+
+    def reduce_position(self, symbol: str, reduce_qty: int, exit_price: float) -> dict:
+        """Reduce an open position by given qty. Computes realized PnL on reduced portion."""
+        open_pos = self.get_position_by_symbol(symbol)
+        if not open_pos:
+            raise ValueError(f"No open position for {symbol}")
+        if reduce_qty >= open_pos["quantity"]:
+            raise ValueError("Use close_position() for full close")
+        direction = 1 if open_pos["side"] == "LONG" else -1
+        realized = (exit_price - open_pos["entry_price"]) * reduce_qty * direction
+        new_qty = open_pos["quantity"] - reduce_qty
+        now = datetime.utcnow().isoformat()
+        conn = self._connect()
+        try:
+            conn.execute("""
+                UPDATE positions SET
+                    quantity = ?,
+                    current_price = ?,
+                    realized_pnl = realized_pnl + ?,
+                    updated_at = ?
+                WHERE id = ? AND status = 'open'
+            """, (new_qty, exit_price, realized, now, open_pos["id"]))
+            conn.commit()
+        finally:
+            conn.close()
+        return self._fetch_one("SELECT * FROM positions WHERE id = ?", (open_pos["id"],))
+
+    def update_position_mtm(self, symbol: str, current_price: float) -> dict:
+        """Update current_price and unrealized_pnl only. Never mutates realized_pnl."""
+        open_pos = self.get_position_by_symbol(symbol)
+        if not open_pos:
+            raise ValueError(f"No open position for {symbol}")
+        direction = 1 if open_pos["side"] == "LONG" else -1
+        unrealized = (current_price - open_pos["entry_price"]) * open_pos["quantity"] * direction
+        now = datetime.utcnow().isoformat()
+        conn = self._connect()
+        try:
+            conn.execute("""
+                UPDATE positions SET
+                    current_price = ?,
+                    unrealized_pnl = ?,
+                    updated_at = ?
+                WHERE id = ? AND status = 'open'
+            """, (current_price, unrealized, now, open_pos["id"]))
+            conn.commit()
+        finally:
+            conn.close()
+        return self._fetch_one("SELECT * FROM positions WHERE id = ?", (open_pos["id"],))
+
+    def get_position_by_symbol(self, symbol: str) -> dict | None:
+        """Get open position for symbol, or None."""
+        return self._fetch_one(
+            "SELECT * FROM positions WHERE symbol = ? AND status = 'open'",
+            (symbol,)
+        )
+
+    def get_all_open_positions(self) -> list[dict]:
+        """Get all currently open positions."""
+        return self._fetch_all(
+            "SELECT * FROM positions WHERE status = 'open' ORDER BY symbol"
+        )
+
+    def get_closed_positions(self, limit: int = 50) -> list[dict]:
+        """Get closed position history."""
+        return self._fetch_all(
+            "SELECT * FROM positions WHERE status = 'closed' ORDER BY closed_at DESC LIMIT ?",
+            (limit,)
+        )
+
+    def insert_position_snapshot_for_compat(self, symbol: str, side: str,
+                                             quantity: int, entry_price: float,
+                                             current_price: float,
+                                             realized_pnl: float,
+                                             unrealized_pnl: float) -> None:
+        """Write a position_snapshot row for equity curve continuity (backward compat)."""
+        conn = self._connect()
+        try:
+            conn.execute("""
+                INSERT INTO position_snapshots
+                    (id, symbol, side, quantity, entry_price, current_price,
+                     unrealized_pnl, realized_pnl, trades_today, daily_pnl, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
+            """, (str(uuid.uuid4()), symbol, side, quantity, entry_price,
+                  current_price, unrealized_pnl, realized_pnl,
+                  datetime.utcnow().isoformat()))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def update_bot_status_position_compat(self, symbol: str, side: str,
+                                           quantity: int, entry_price: float) -> None:
+        """Update bot_status singleton with primary position for legacy dashboard compat."""
+        status = self.get_bot_status() or {}
+        status["current_symbol"] = symbol
+        status["position_side"] = side
+        status["position_qty"] = quantity
+        status["position_entry_price"] = entry_price
+        self.upsert_bot_status(status)
 
     # ── Aggregation Queries ─────────────────────────────────────────────
 
