@@ -1,6 +1,6 @@
 # CURRENT STATUS — Trading Terminal
 
-**Version:** v0.5.0 (Phase 2 — Market Data Layer + Scanner Engine)
+**Version:** v0.6.0 (Phase 3 — Runtime Observability + Portfolio State)
 
 **Date:** 2026-05-20
 
@@ -48,6 +48,18 @@
 | main.py wiring | ✅ IMPLEMENTED | Scheduler start/stop in lifespan, scan callback with cache |
 | source field | ✅ IMPLEMENTED | `NormalizedSignal.source` — "webhook" / "scanner" attribution |
 
+## Migration Status — Runtime Observability & Portfolio State (Phase 3)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| ScanMetrics singleton | ✅ IMPLEMENTED | `ops_api/scan_metrics.py` — thread-safe, counters + timings |
+| Scheduler heartbeat metrics | ✅ IMPLEMENTED | tick/error counters, min/max/avg duration, uptime, missed ticks |
+| Strategy performance aggregation | ✅ IMPLEMENTED | `db.get_strategy_performance()` — PnL, wins/losses per strategy |
+| Portfolio state queries | ✅ IMPLEMENTED | `db.get_current_positions()`, `db.get_portfolio_summary()` |
+| Dashboard fields | ✅ IMPLEMENTED | `scanner_metrics`, `portfolio`, `strategy_performance` added |
+| Scanner health check | ✅ IMPLEMENTED | `/health` endpoint reports scheduler state + metrics summary |
+| Test coverage | ✅ IMPLEMENTED | 190 tests passing — scan_metrics, scheduler, portfolio, strategy perf |
+
 ## Startup Commands
 
 ```bash
@@ -59,6 +71,17 @@ cd /c/Users/surya/free-claude-code/trading-term && npx next dev -p 3000 --hostna
 ```
 
 ## Recent Changes (2026-05-20)
+
+### Phase 3: Runtime Observability + Portfolio State (2026-05-20)
+
+- **New module:** `ops_api/scan_metrics.py` — thread-safe ScanMetrics singleton (scan counts, cache hit rate, avg duration, signal tracking)
+- **Modified:** `ops_api/scheduler.py` — added tick/error counters, tick timing (min/max/avg), uptime, missed_ticks, metrics_snapshot()
+- **Modified:** `ops_api/db.py` — added `get_strategy_performance()` (aggregates execution_orders by strategy), `get_current_positions()` (latest snapshot per symbol), `get_portfolio_summary()` (total exposure, unrealized/realized PnL)
+- **Modified:** `ops_api/health.py` — added `check_scanner()` that reports scheduler running state + scan metrics summary
+- **Modified:** `ops_api/main.py` — wired scan_metrics into scan callback (cache hit/miss tracking, signal recording), added scanner health check to /health, added scanner_metrics + portfolio to /dashboard/data, strategy_performance to /dashboard/analytics
+- **New tests:** `tests/ops_api/test_scan_metrics.py`, `tests/ops_api/test_portfolio.py` — 18 new tests total
+- **Modified tests:** `tests/ops_api/test_scheduler.py`, `tests/ops_api/test_db.py` — heartbeat metrics + strategy perf tests
+- **Design constraints met:** All in-memory metrics reset on restart, SQLite aggregation queries existing data, additive to all existing endpoints, zero overhead when scanner disabled, 190 tests passing with zero regressions
 
 ### Fix 1: Validation pipeline duplicate_alert false rejection
 - **Root cause:** `_check_staleness` in `validation.py` queried `get_alert_by_alert_id()` which always found the raw alert row the webhook handler just inserted moments earlier
