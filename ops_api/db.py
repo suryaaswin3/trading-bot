@@ -321,8 +321,8 @@ class DatabaseManager:
             conn.execute(
                 """INSERT INTO normalized_signals
                    (id, webhook_alert_id, alert_id, symbol, side, strategy, timeframe,
-                    price, signal_timestamp, reason, normalized_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    price, signal_timestamp, reason, source, normalized_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     signal["id"],
                     signal.get("webhook_alert_id", ""),
@@ -334,6 +334,7 @@ class DatabaseManager:
                     signal.get("price", 0.0),
                     signal.get("signal_timestamp"),
                     signal.get("reason", ""),
+                    signal.get("source", "webhook"),
                     signal.get("normalized_at", _now_utc()),
                 ),
             )
