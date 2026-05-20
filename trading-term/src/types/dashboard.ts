@@ -22,6 +22,9 @@ export interface DashboardData {
   recent_errors: string[];
   kill_switch: KillSwitchState;
   telegram_healthy: boolean | null;
+  positions?: PositionState[];
+  portfolio_snapshot?: PortfolioSnapshot;
+  closed_positions?: PositionState[];
 }
 
 export interface CurrentPosition {
@@ -29,6 +32,33 @@ export interface CurrentPosition {
   side: string | null;
   quantity: number;
   entry_price: number;
+}
+
+export interface PositionState {
+  id: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  entry_price: number;
+  current_price: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  status: string;
+  strategy_id: string;
+  opened_at: string;
+  closed_at: string | null;
+  updated_at: string;
+}
+
+export interface PortfolioSnapshot {
+  positions: PositionState[];
+  total_exposure: number;
+  total_unrealized_pnl: number;
+  total_realized_pnl: number;
+  position_count: number;
+  largest_position_symbol: string;
+  largest_position_pct: number;
+  updated_at: string;
 }
 
 // ── Execution Orders ──────────────────────────────────────────────────
