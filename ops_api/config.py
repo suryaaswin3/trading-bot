@@ -63,6 +63,16 @@ class OpsApiConfig:
     flatten_on_kill: bool = False
     """If True, flatten all positions when kill switch is activated."""
 
+    # ── Strategy Engine ─────────────────────────────────────────
+    use_strategy_engine: bool = True
+
+    # ── Scanner Engine ──────────────────────────────────────────
+    scanner_enabled: bool = True
+    scanner_interval_seconds: int = 60
+    scanner_symbols: tuple[str, ...] = field(
+        default_factory=lambda: ("NIFTY", "BANKNIFTY")
+    )
+
     def validate(self) -> list[str]:
         """Run startup validation. Returns list of warning/error messages.
 
@@ -115,7 +125,7 @@ def load_ops_config() -> OpsApiConfig:
     kwargs = {}
 
     # Manual mapping for type coercion
-    bool_keys = {"OA_RELOAD", "OA_FLATTEN_ON_KILL"}
+    bool_keys = {"OA_RELOAD", "OA_FLATTEN_ON_KILL", "OA_USE_STRATEGY_ENGINE", "OA_SCANNER_ENABLED"}
     int_keys = {
         "OA_PORT",
         "OA_DASHBOARD_PORT",
@@ -123,6 +133,7 @@ def load_ops_config() -> OpsApiConfig:
         "OA_MAX_STALENESS_SECONDS",
         "OA_DB_POOL_TIMEOUT",
         "OA_RETENTION_DAYS",
+        "OA_SCANNER_INTERVAL_SECONDS",
     }
 
     for key, value in os.environ.items():
@@ -139,6 +150,10 @@ def load_ops_config() -> OpsApiConfig:
             kwargs[field_name] = int(value)
         elif key == "OA_ALLOWED_SYMBOLS":
             kwargs["allowed_symbols"] = tuple(
+                s.strip() for s in value.split(",") if s.strip()
+            )
+        elif key == "OA_SCANNER_SYMBOLS":
+            kwargs["scanner_symbols"] = tuple(
                 s.strip() for s in value.split(",") if s.strip()
             )
         else:
