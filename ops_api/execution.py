@@ -17,6 +17,7 @@ from loguru import logger
 
 from ops_api.config import OpsApiConfig
 from ops_api.db import DatabaseManager
+from ops_api.position_manager import PositionManager
 
 _UTC_STR = "%Y-%m-%dT%H:%M:%S.%fZ"
 
@@ -94,11 +95,13 @@ class ExecutionEngine:
         config: OpsApiConfig,
         db: DatabaseManager,
         kite_client: Any = None,
+        position_manager: PositionManager | None = None,
     ) -> None:
         self.config = config
         self.db = db
         self.kite = kite_client
         self.paper = PaperBroker(config)
+        self._position_manager = position_manager
 
     def execute(
         self,
@@ -197,6 +200,23 @@ class ExecutionEngine:
                 "error_message": result.get("error_message", ""),
             }
             self.db.update_order(order_uuid, updates)
+
+            # Position lifecycle mutation (Phase 4)
+            if self._position_manager is not None and result.get("status") == "filled":
+                try:
+                    mutation = self._position_manager.open_or_adjust(
+                        symbol=result.get("symbol", signal.get("symbol", "")),
+                        side=result.get("side", signal.get("side", "")),
+                        quantity=result.get("filled_quantity", signal.get("quantity", 0)),
+                        price=result.get("filled_price", signal.get("price", 0.0)),
+                        strategy_id=signal.get("strategy", ""),
+                    )
+                    result["position_mutation"] = {
+                        "action": mutation.action,
+                        "realized_pnl_delta": mutation.realized_pnl_delta,
+                    }
+                except Exception:
+                    logger.exception("Position mutation failed after fill for {}", signal.get("symbol"))
 
             logger.info(
                 "Order {}: status={} external_id={}",
@@ -301,14 +321,22 @@ class ExecutionEngine:
             }
 
     def flatten(self) -> dict[str, Any]:
-        """Close all open positions (emergency flatten)."""
-        # Placeholder: in production, this would query current positions
-        # and place opposite-side orders.
+        """Close all open positions (emergency flatten).
+
+        Currently synthetic paper-mode lifecycle closure.
+        Future live flatten must route through broker execution.
+        """
         logger.warning("FLATTEN command received — closing all positions")
+        if self._position_manager is None:
+            return {"status": "completed", "action": "flatten", "detail": "No position manager configured"}
+        results = self._position_manager.flatten()
         return {
             "status": "completed",
             "action": "flatten",
-            "detail": "Flatten command issued (position close pending)",
+            "detail": f"Closed {len(results)} position(s)",
+            "closed_positions": [
+                {"symbol": r.symbol, "realized_pnl": r.realized_pnl_delta} for r in results
+            ],
         }
 
     def _resolve_quantity(self, symbol: str) -> int:
