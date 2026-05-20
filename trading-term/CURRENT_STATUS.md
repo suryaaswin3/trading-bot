@@ -1,8 +1,8 @@
 # CURRENT STATUS — Trading Terminal
 
-**Version:** v0.3.1 (Phase 2.7 — validation-order fix + state reporting fix)
+**Version:** v0.5.0 (Phase 2 — Market Data Layer + Scanner Engine)
 
-**Date:** 2026-05-19
+**Date:** 2026-05-20
 
 ---
 
@@ -18,6 +18,36 @@
 | Telegram | ✅ HEALTHY | — | Notifier operational |
 | SQLite (WAL) | ✅ HEALTHY | — | ops_data.db |
 
+## Migration Status — Strategy Architecture (Phase 0 + Phase 1)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| BaseStrategy ABC | ✅ IMPLEMENTED | `ops_api/strategies/base.py` — 4 hooks with sensible defaults |
+| StrategyRegistry | ✅ IMPLEMENTED | `ops_api/strategies/registry.py` — thread-safe, in-memory |
+| DefaultStrategy | ✅ IMPLEMENTED | `ops_api/strategies/default.py` — reproduces v0.3.1 behavior exactly |
+| RiskEngine | ✅ IMPLEMENTED | `ops_api/risk_engine.py` — kill switch + per-strategy limits |
+| StrategyEngine | ✅ IMPLEMENTED | `ops_api/strategy_engine.py` — wraps validator + executor |
+| Config flag | ✅ IMPLEMENTED | `OA_USE_STRATEGY_ENGINE` (default: True) — set False for rollback |
+| Pipeline wiring | ✅ IMPLEMENTED | Active when `config.use_strategy_engine=True` (default) |
+| Existing flow | ✅ UNCHANGED | `webhook.py`, `validation.py`, `execution.py`, `db.py` untouched |
+
+**Rollback:** Set `OA_USE_STRATEGY_ENGINE=false` in `.env` — the original validator -> executor path activates immediately.
+
+## Migration Status — Market Data & Scanner Engine (Phase 2)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Pure-function indicators | ✅ IMPLEMENTED | `ops_api/indicators.py` — EMA, ATR, VWAP (172 tests) |
+| OHLCV Cache | ✅ IMPLEMENTED | `ops_api/market_data/base.py` — thread-safe, TTL-based |
+| Kite Connect provider | ✅ IMPLEMENTED | `ops_api/market_data/kite_provider.py` — wraps historical_data() |
+| BaseScanner ABC | ✅ IMPLEMENTED | `ops_api/scanner/base.py` — stateless, deterministic |
+| MomentumScanner | ✅ IMPLEMENTED | `ops_api/scanner/momentum.py` — EMA20/50 + VWAP + ROC |
+| VolumeScanner | ✅ IMPLEMENTED | `ops_api/scanner/volume.py` — 2.5x volume spike detection |
+| ScanScheduler | ✅ IMPLEMENTED | `ops_api/scheduler.py` — daemon thread, Event shutdown |
+| Config options | ✅ IMPLEMENTED | `OA_SCANNER_ENABLED`, `OA_SCANNER_INTERVAL_SECONDS`, `OA_SCANNER_SYMBOLS` |
+| main.py wiring | ✅ IMPLEMENTED | Scheduler start/stop in lifespan, scan callback with cache |
+| source field | ✅ IMPLEMENTED | `NormalizedSignal.source` — "webhook" / "scanner" attribution |
+
 ## Startup Commands
 
 ```bash
@@ -28,7 +58,7 @@ cd /c/Users/surya/free-claude-code && uv run uvicorn ops_api.main:app --host 127
 cd /c/Users/surya/free-claude-code/trading-term && npx next dev -p 3000 --hostname 0.0.0.0
 ```
 
-## Recent Changes (2026-05-19)
+## Recent Changes (2026-05-20)
 
 ### Fix 1: Validation pipeline duplicate_alert false rejection
 - **Root cause:** `_check_staleness` in `validation.py` queried `get_alert_by_alert_id()` which always found the raw alert row the webhook handler just inserted moments earlier
@@ -50,6 +80,26 @@ cd /c/Users/surya/free-claude-code/trading-term && npx next dev -p 3000 --hostna
 - **Fix:** On startup, if Kite client fails to connect, `bot_status.kite_connected` is reset to False (with all other fields preserved via merge). Dashboard endpoint computes staleness-aware kite_connected based on heartbeat freshness at query time.
 - **Fix:** After webhook execution, a heartbeat is written to refresh liveness tracking.
 - **Files:** `ops_api/main.py`
+
+### Phase 0+1: Strategy Abstraction Architecture (2026-05-20)
+
+- **New module:** `ops_api/strategies/` with `BaseStrategy` ABC, `StrategyRegistry`, `DefaultStrategy`
+- **New module:** `ops_api/strategy_engine.py` — routes signals through strategy layer
+- **New module:** `ops_api/risk_engine.py` — pre-execution risk gates with per-strategy limits
+- **Config:** Added `OA_USE_STRATEGY_ENGINE` flag (default: True) for instant rollback
+- **Pipeline:** StrategyEngine wraps existing ValidationPipeline + ExecutionEngine; existing path preserved via config flag
+- **Files NOT modified:** `webhook.py`, `validation.py`, `execution.py`, `db.py`, `health.py`, `notifier.py`
+
+### Phase 2: Market Data Layer + Scanner Engine (2026-05-20)
+
+- **New module:** `ops_api/indicators.py` — pure-function EMA, ATR, VWAP (no state, no API calls)
+- **New package:** `ops_api/market_data/` — `BarSnapshot`, `OHLCVCache` (thread-safe, TTL-based), `KiteConnectMarketData` (wraps `historical_data()`)
+- **New package:** `ops_api/scanner/` — `BaseScanner` ABC, `MomentumScanner` (EMA20/50 crossovers + VWAP + ROC), `VolumeScanner` (2.5x volume spike + price direction)
+- **New module:** `ops_api/scheduler.py` — `ScanScheduler` daemon thread with `threading.Event` shutdown
+- **Config:** Added `OA_SCANNER_ENABLED`, `OA_SCANNER_INTERVAL_SECONDS`, `OA_SCANNER_SYMBOLS`
+- **Pipeline:** Scanner signals flow into `StrategyEngine.process()` — same unified path as webhook signals
+- **Signals:** Added `source` field to `NormalizedSignal` (`"webhook"` | `"scanner"`) for pipeline attribution
+- **Design constraints met:** No async, no websocket, no event bus, no AI runtime, polling-only, in-memory OHLCV cache, high-confidence signals only, config-driven NIFTY 50 universe
 
 ## URL Routing
 
@@ -82,13 +132,21 @@ cd /c/Users/surya/free-claude-code/trading-term && npx next dev -p 3000 --hostna
 | GET /dashboard/analytics | ✅ 200 | execution_events, pnl_by_strategy, etc. |
 | GET /api/backend/health (rewrite) | ✅ 200 | Via Next.js same-origin proxy |
 
-## Webhook Flow (Current)
+## Signal Flow (Current)
 
 ```
+WEBHOOK PATH:
 TradingView POST → Auth (secret match) → Rate limit → Payload validation
 → Webhook dedup (alert_id) → Store raw alert → Normalize → Store signal
-→ Validation (11 checks, no short-circuit) → [if passed] Execution (PaperBroker)
-→ Write heartbeat → Telegram notification → Response with execution result
+→ Validation (11 checks) → Strategy Engine → Risk Engine → Execution (PaperBroker)
+→ Write heartbeat → Telegram notification
+
+SCANNER PATH:
+Scheduler tick (60s) → Check OHLCV cache → [miss] Kite historical_data() → Cache bars
+→ MomentumScanner / VolumeScanner → [signal] Normalize → Store signal
+→ Strategy Engine → Validation → Risk Engine → Execution (PaperBroker)
+
+Both paths converge at StrategyEngine.process() — unified execution pipeline.
 ```
 
 ## Execution Status
