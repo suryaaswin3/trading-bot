@@ -14,6 +14,8 @@ from typing import Any, Callable
 from datetime import datetime
 from uuid import uuid4
 
+import dataclasses
+
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +31,7 @@ from ops_api.models import (
     ApiError,
     WebhookResponse,
 )
+from ops_api.position_manager import PositionManager
 from ops_api.notifier import TelegramNotifier, create_notifier
 from ops_api.risk_engine import RiskEngine
 from ops_api.market_data import OHLCVCache
@@ -50,6 +53,7 @@ notifier: TelegramNotifier | None = None
 strategy_engine: StrategyEngine | None = None
 scanner_scheduler: ScanScheduler | None = None
 scan_metrics: ScanMetrics | None = None
+position_manager: PositionManager | None = None
 _shutdown = False
 
 
@@ -115,7 +119,7 @@ def _build_scan_callback(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise DB, config, and services on startup."""
-    global config, db, validator, executor, notifier, strategy_engine, scanner_scheduler, scan_metrics
+    global config, db, validator, executor, notifier, strategy_engine, scanner_scheduler, scan_metrics, position_manager
 
     load_dotenv()
     config = load_ops_config()
@@ -141,6 +145,9 @@ async def lifespan(app: FastAPI):
     total_deleted = sum(v for v in deleted.values() if v > 0)
     if total_deleted:
         logger.info("Startup cleanup removed {} old records", total_deleted)
+
+    # ── Position Manager (Phase 4) ───────────────────────────
+    position_manager = PositionManager(db)
 
     notifier = create_notifier(config, db)
     validator = ValidationPipeline(config, db)
@@ -173,18 +180,19 @@ async def lifespan(app: FastAPI):
             merged["kite_connected"] = False
             db.upsert_bot_status(merged)
 
-    executor = ExecutionEngine(config, db, kite_client=kite_client)
+    executor = ExecutionEngine(config, db, kite_client=kite_client, position_manager=position_manager)
 
     # ── Strategy Engine (Phase 1) ────────────────────────────────
     _registry = StrategyRegistry()
     _registry.register(DefaultStrategy())
-    _risk_engine = RiskEngine(db)
+    _risk_engine = RiskEngine(db, position_manager=position_manager)
     strategy_engine = StrategyEngine(
         registry=_registry,
         validator=validator,
         executor=executor,
         risk_engine=_risk_engine,
         db=db,
+        position_manager=position_manager,
     )
     logger.info("Strategy engine initialised with {} strategy(ies)", len(_registry.all()))
 
@@ -516,6 +524,8 @@ async def dashboard_data() -> dict[str, Any]:
         "recent_notifications": recent_notifications,
         "scanner_metrics": scan_metrics.snapshot() if scan_metrics is not None else {},
         "portfolio": db.get_portfolio_summary(),
+        "positions": [dataclasses.asdict(p) for p in position_manager.get_all_positions()] if position_manager is not None else [],
+        "portfolio_snapshot": dataclasses.asdict(position_manager.get_portfolio()) if position_manager is not None else {},
     }
 
 
@@ -530,6 +540,7 @@ async def dashboard_analytics() -> dict[str, Any]:
         "rejection_stats": db.get_rejection_stats(limit=100),
         "daily_pnl_history": db.get_daily_pnl_history(limit=30),
         "strategy_performance": db.get_strategy_performance(),
+        "closed_positions": [dataclasses.asdict(p) for p in position_manager.get_closed_positions(limit=50)] if position_manager is not None else [],
     }
 
 
