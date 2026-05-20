@@ -8,6 +8,7 @@ from typing import Any
 from loguru import logger
 
 from ops_api.db import DatabaseManager
+from ops_api.scan_metrics import ScanMetrics
 
 _UTC_STR = "%Y-%m-%dT%H:%M:%S.%fZ"
 _STALE_SECONDS = 300  # heartbeat older than this is considered stale
@@ -141,6 +142,22 @@ def check_telegram(
     return {"component": "telegram", "status": "warn", "detail": "Last send failed"}
 
 
+def check_scanner(
+    scheduler_running: bool | None = None,
+    scan_metrics: ScanMetrics | None = None,
+) -> dict[str, Any]:
+    """Report scanner engine health and metrics."""
+    if scheduler_running is None:
+        return {"component": "scanner_engine", "status": "pass", "detail": "Scanner not configured"}
+    if not scheduler_running:
+        return {"component": "scanner_engine", "status": "warn", "detail": "Scanner scheduler not running"}
+    parts = ["Scanner running"]
+    if scan_metrics is not None:
+        m = scan_metrics.snapshot()
+        parts.append(f"scans={m['total_scans']} signals={m['signals_found']} cache_hit={m['cache_hit_rate']:.0%}")
+    return {"component": "scanner_engine", "status": "pass", "detail": " | ".join(parts)}
+
+
 _HEALTH_COUNTER = 0
 
 
@@ -148,6 +165,8 @@ def run_health_checks(
     db: DatabaseManager,
     config_loaded: bool = True,
     telegram_healthy: bool | None = None,
+    scheduler_running: bool | None = None,
+    scan_metrics: ScanMetrics | None = None,
 ) -> list[dict[str, Any]]:
     """Run all health checks and return results."""
     global _HEALTH_COUNTER
@@ -161,6 +180,7 @@ def run_health_checks(
         check_kill_switch(db),
         check_kite(db),
         check_telegram(telegram_healthy),
+        check_scanner(scheduler_running, scan_metrics),
     ]
 
     for r in results:
