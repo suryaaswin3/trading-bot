@@ -1,8 +1,8 @@
 # CURRENT STATUS — Trading Terminal
 
-**Version:** v0.6.0 (Phase 3 — Runtime Observability + Portfolio State)
+**Version:** v0.6.0 (Phase 4 — Position + Portfolio State Refactor)
 
-**Date:** 2026-05-20
+**Date:** 2026-05-21
 
 ---
 
@@ -60,6 +60,25 @@
 | Scanner health check | ✅ IMPLEMENTED | `/health` endpoint reports scheduler state + metrics summary |
 | Test coverage | ✅ IMPLEMENTED | 190 tests passing — scan_metrics, scheduler, portfolio, strategy perf |
 
+## Migration Status — Position & Portfolio State (Phase 4)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Position models | ✅ IMPLEMENTED | `ops_api/position_models.py` — PositionState, PortfolioSnapshot, PositionMutationResult |
+| PositionManager | ✅ IMPLEMENTED | `ops_api/position_manager.py` — lifecycle, PnL, MTM, portfolio, flatten |
+| DB positions schema | ✅ IMPLEMENTED | `ops_api/db.py` — positions table, partial unique index, CRUD methods |
+| RiskEngine position checks | ✅ IMPLEMENTED | `ops_api/risk_engine.py` — per-symbol limit, exposure cap, concentration limit |
+| ExecutionEngine integration | ✅ IMPLEMENTED | `ops_api/execution.py` — post-fill PositionManager call, real flatten() |
+| StrategyEngine portfolio wiring | ✅ IMPLEMENTED | `ops_api/strategy_engine.py` — real PortfolioSnapshot to strategies |
+| Dashboard fields | ✅ IMPLEMENTED | `ops_api/main.py` — positions, portfolio_snapshot, closed_positions |
+| TypeScript types | ✅ IMPLEMENTED | `trading-term/src/types/dashboard.ts` — PositionState, PortfolioSnapshot |
+| Position manager tests | ✅ IMPLEMENTED | `tests/ops_api/test_position_manager.py` — 30 tests (lifecycle, PnL, MTM, portfolio, reversal) |
+| DB position CRUD tests | ✅ IMPLEMENTED | `tests/ops_api/test_db.py` — 14 tests (upsert, close, reduce, MTM, compat) |
+| RiskEngine position tests | ✅ IMPLEMENTED | `tests/ops_api/test_risk_engine.py` — 7 tests (real PositionManager integration) |
+| Additive migration | ✅ PRESERVED | PositionManager=None is valid no-op; old constructors unchanged |
+| Backward compat bridge | ✅ IMPLEMENTED | `update_bot_status_position_compat()` + `insert_position_snapshot_for_compat()` |
+| Test coverage | ✅ PASSING | 241 tests total, zero regressions |
+
 ## Startup Commands
 
 ```bash
@@ -82,6 +101,20 @@ cd /c/Users/surya/free-claude-code/trading-term && npx next dev -p 3000 --hostna
 - **New tests:** `tests/ops_api/test_scan_metrics.py`, `tests/ops_api/test_portfolio.py` — 18 new tests total
 - **Modified tests:** `tests/ops_api/test_scheduler.py`, `tests/ops_api/test_db.py` — heartbeat metrics + strategy perf tests
 - **Design constraints met:** All in-memory metrics reset on restart, SQLite aggregation queries existing data, additive to all existing endpoints, zero overhead when scanner disabled, 190 tests passing with zero regressions
+
+### Phase 4: Position + Portfolio State Refactor (2026-05-21)
+
+- **New module:** `ops_api/position_models.py` — PositionState, PortfolioSnapshot, PositionMutationResult dataclasses
+- **New module:** `ops_api/position_manager.py` — PositionManager service (lifecycle, PnL, MTM, portfolio, flatten)
+- **Modified:** `ops_api/db.py` — positions table with partial unique index, 9 CRUD methods, compat bridges
+- **Modified:** `ops_api/execution.py` — post-fill PositionManager mutation, real flatten() delegation
+- **Modified:** `ops_api/risk_engine.py` — per-symbol limit, portfolio exposure cap, position concentration checks
+- **Modified:** `ops_api/strategy_engine.py` — real PortfolioSnapshot wiring instead of empty dict
+- **Modified:** `ops_api/main.py` — PositionManager wiring, dashboard fields (positions, portfolio_snapshot, closed_positions)
+- **Modified:** `trading-term/src/types/dashboard.ts` — PositionState, PortfolioSnapshot TypeScript interfaces
+- **New tests:** `tests/ops_api/test_position_manager.py` — 30 tests (lifecycle, PnL, MTM, portfolio, reversal, flatten)
+- **Modified tests:** `tests/ops_api/test_db.py` — 14 position CRUD tests, `tests/ops_api/test_risk_engine.py` — 7 position-aware tests
+- **Design constraints met:** One net position per symbol (partial unique index), BUY/SELL→LONG/SHORT mapping, reversal lifecycle (close old + open new), additive migration (PositionManager=None no-op), backward compat bridges preserved, 241 tests passing with zero regressions
 
 ### Fix 1: Validation pipeline duplicate_alert false rejection
 - **Root cause:** `_check_staleness` in `validation.py` queried `get_alert_by_alert_id()` which always found the raw alert row the webhook handler just inserted moments earlier
@@ -177,7 +210,7 @@ Both paths converge at StrategyEngine.process() — unified execution pipeline.
 | Metric | Value |
 |--------|-------|
 | Bot mode | paper |
-| Active position | None |
+| Active positions | 0 (multi-symbol supported) |
 | Trades today | 0 |
 | Daily PnL | 0.0 |
 | Cumulative PnL | 0.0 |
