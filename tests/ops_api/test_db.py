@@ -362,3 +362,116 @@ class TestRiskCounters:
         assert rc is not None
         assert rc["trades_today"] == 2
         assert rc["daily_pnl"] == 200.0
+
+
+class TestPositionsCRUD:
+    """Tests for positions table CRUD operations (Phase 4)."""
+
+    def test_upsert_new_position(self, db):
+        """Insert a new open position returns an id."""
+        pid = db.upsert_open_position("RELIANCE", "LONG", 10, 250.0)
+        assert pid is not None
+        assert isinstance(pid, str) and len(pid) > 0
+
+    def test_upsert_updates_existing(self, db):
+        """Upserting same symbol overwrites with new values (PositionManager handles accumulation)."""
+        db.upsert_open_position("RELIANCE", "LONG", 10, 250.0)
+        db.upsert_open_position("RELIANCE", "LONG", 15, 260.0)
+        row = db.get_position_by_symbol("RELIANCE")
+        assert row is not None
+        assert row["quantity"] == 15
+        assert row["entry_price"] == 260.0
+
+    def test_upsert_allows_closed_duplicate(self, db):
+        """Partial unique index allows same symbol after closing."""
+        pid1 = db.upsert_open_position("RELIANCE", "LONG", 10, 250.0)
+        db.close_position("RELIANCE", 260.0)
+        pid2 = db.upsert_open_position("RELIANCE", "LONG", 5, 255.0)
+        assert pid2 is not None
+        assert pid1 != pid2
+
+    def test_close_position_long(self, db):
+        """Close a long position computes realized PnL correctly."""
+        db.upsert_open_position("RELIANCE", "LONG", 10, 250.0)
+        result = db.close_position("RELIANCE", 260.0)
+        assert result is not None
+        assert result["quantity"] == 0
+        assert result["status"] == "closed"
+        assert result["realized_pnl"] == pytest.approx(100.0)
+        assert result["closed_at"] is not None
+
+    def test_close_position_short(self, db):
+        """Close a short position computes realized PnL correctly."""
+        db.upsert_open_position("TCS", "SHORT", 5, 200.0)
+        result = db.close_position("TCS", 190.0)
+        assert result is not None
+        assert result["realized_pnl"] == pytest.approx(50.0)
+
+    def test_close_nonexistent_returns_none(self, db):
+        """Closing a position that doesn't exist returns None."""
+        result = db.close_position("NONEXIST", 100.0)
+        assert result is None
+
+    def test_reduce_position_long(self, db):
+        """Reduce a long position: partial close with pro-rata realized PnL."""
+        db.upsert_open_position("RELIANCE", "LONG", 10, 250.0)
+        result = db.reduce_position("RELIANCE", 4, 260.0)
+        assert result is not None
+        assert result["quantity"] == 6
+        assert result["realized_pnl"] == pytest.approx(40.0)
+        assert result["status"] == "open"
+
+    def test_reduce_position_short(self, db):
+        """Reduce a short position: partial close with correct PnL."""
+        db.upsert_open_position("TCS", "SHORT", 5, 200.0)
+        result = db.reduce_position("TCS", 2, 190.0)
+        assert result is not None
+        assert result["quantity"] == 3
+        assert result["realized_pnl"] == pytest.approx(20.0)
+
+    def test_reduce_full_quantity_closes(self, db):
+        """Reducing all quantity delegates to close_position."""
+        db.upsert_open_position("RELIANCE", "LONG", 10, 250.0)
+        result = db.reduce_position("RELIANCE", 10, 260.0)
+        assert result is not None
+        assert result["quantity"] == 0
+        assert result["status"] == "closed"
+
+    def test_mtm_updates_current_price(self, db):
+        """MTM updates current_price and unrealized_pnl only."""
+        db.upsert_open_position("RELIANCE", "LONG", 10, 250.0)
+        result = db.update_position_mtm("RELIANCE", 260.0)
+        assert result is not None
+        assert result["current_price"] == 260.0
+        assert result["unrealized_pnl"] == pytest.approx(100.0)
+
+    def test_mtm_preserves_realized_pnl(self, db):
+        """MTM must not touch realized_pnl."""
+        db.upsert_open_position("RELIANCE", "LONG", 10, 250.0)
+        result = db.update_position_mtm("RELIANCE", 260.0)
+        assert result["realized_pnl"] == 0.0
+
+    def test_get_all_open_positions(self, db):
+        """Returns only open positions."""
+        db.upsert_open_position("RELIANCE", "LONG", 10, 250.0)
+        db.upsert_open_position("TCS", "SHORT", 5, 200.0)
+        db.close_position("TCS", 195.0)
+        positions = db.get_all_open_positions()
+        assert len(positions) == 1
+        assert positions[0]["symbol"] == "RELIANCE"
+
+    def test_get_closed_positions_history(self, db):
+        """Returns closed positions in reverse chronological order."""
+        db.upsert_open_position("RELIANCE", "LONG", 10, 250.0)
+        db.close_position("RELIANCE", 260.0)
+        db.upsert_open_position("TCS", "SHORT", 5, 200.0)
+        db.close_position("TCS", 195.0)
+        closed = db.get_closed_positions(limit=5)
+        assert len(closed) == 2
+        assert closed[0]["symbol"] == "TCS"
+
+    def test_compat_snapshot_insert(self, db):
+        """insert_position_snapshot_for_compat writes to position_snapshots."""
+        db.insert_position_snapshot_for_compat("RELIANCE", "LONG", 10, 250.0, 260.0, 50.0, 100.0)
+        curve = db.get_equity_curve(limit=10)
+        assert len(curve) >= 1
