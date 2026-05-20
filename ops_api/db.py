@@ -1082,3 +1082,99 @@ class DatabaseManager:
             pass
         finally:
             conn.close()
+
+    # ── Strategy Performance ───────────────────────────────────────────
+
+    def get_strategy_performance(self) -> list[dict[str, Any]]:
+        """Aggregate PnL and trade stats per strategy from execution_orders.
+
+        Only considers filled orders with data_source='production'.
+        Net PnL per order: BUY side = -(price * qty), SELL side = +(price * qty).
+        """
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """SELECT strategy, side, price, quantity, status
+                   FROM execution_orders
+                   WHERE status = 'filled' AND data_source = 'production'
+                   ORDER BY strategy"""
+            ).fetchall()
+        finally:
+            conn.close()
+
+        from collections import defaultdict
+        agg: dict[str, dict] = defaultdict(lambda: {
+            "trade_count": 0, "net_pnl": 0.0, "wins": 0, "losses": 0,
+            "buy_count": 0, "sell_count": 0, "total_buy_value": 0.0, "total_sell_value": 0.0,
+        })
+        for r in rows:
+            d = dict(r)
+            strat = d["strategy"]
+            pnl_contrib = d["price"] * d["quantity"]
+            agg[strat]["trade_count"] += 1
+            if d["side"] == "BUY":
+                pnl_contrib = -pnl_contrib
+                agg[strat]["buy_count"] += 1
+                agg[strat]["total_buy_value"] += d["price"] * d["quantity"]
+            else:
+                agg[strat]["sell_count"] += 1
+                agg[strat]["total_sell_value"] += d["price"] * d["quantity"]
+            agg[strat]["net_pnl"] += pnl_contrib
+            if pnl_contrib > 0:
+                agg[strat]["wins"] += 1
+            else:
+                agg[strat]["losses"] += 1
+
+        results = []
+        for strat, data in sorted(agg.items(), key=lambda x: x[1]["net_pnl"], reverse=True):
+            results.append({"strategy": strat, **data})
+        return results
+
+    # ── Current Positions ──────────────────────────────────────────────
+
+    def get_current_positions(self) -> list[dict[str, Any]]:
+        """Get the latest position snapshot per symbol with quantity > 0."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """SELECT ps.* FROM position_snapshots ps
+                   INNER JOIN (
+                       SELECT symbol, MAX(timestamp) as max_ts
+                       FROM position_snapshots GROUP BY symbol
+                   ) latest ON ps.symbol = latest.symbol AND ps.timestamp = latest.max_ts
+                   WHERE ps.quantity > 0
+                   ORDER BY ps.symbol"""
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    # ── Portfolio Summary ──────────────────────────────────────────────
+
+    def get_portfolio_summary(self) -> dict[str, Any]:
+        """Aggregate portfolio-level metrics from current positions."""
+        positions = self.get_current_positions()
+        if not positions:
+            return {
+                "positions": [], "total_exposure": 0.0, "total_unrealized_pnl": 0.0,
+                "total_realized_pnl": 0.0, "position_count": 0,
+                "largest_position_symbol": "", "largest_position_pct": 0.0,
+                "updated_at": "",
+            }
+        total_exposure = sum(p["quantity"] * p["current_price"] for p in positions)
+        total_unrealized = sum(p["unrealized_pnl"] for p in positions)
+        total_realized = sum(p["realized_pnl"] for p in positions)
+        largest = max(positions, key=lambda p: p["quantity"] * p["current_price"])
+        largest_exposure = largest["quantity"] * largest["current_price"]
+        largest_pct = (largest_exposure / total_exposure * 100) if total_exposure else 0.0
+        latest_ts = max(p["timestamp"] for p in positions) if positions else ""
+        return {
+            "positions": positions,
+            "total_exposure": round(total_exposure, 2),
+            "total_unrealized_pnl": round(total_unrealized, 2),
+            "total_realized_pnl": round(total_realized, 2),
+            "position_count": len(positions),
+            "largest_position_symbol": largest["symbol"],
+            "largest_position_pct": round(largest_pct, 2),
+            "updated_at": latest_ts,
+        }
