@@ -4,7 +4,20 @@ from __future__ import annotations
 
 from __future__ import annotations
 
+import tempfile
+
+import pytest
+
+from ops_api.db import DatabaseManager
 from ops_api.models import NormalizedSignal, SignalSide
+
+
+@pytest.fixture
+def db() -> DatabaseManager:
+    tmp = tempfile.mktemp(suffix=".db")
+    mgr = DatabaseManager(tmp)
+    mgr.init_schema()
+    return mgr
 
 
 class TestNormalizedSignalSource:
@@ -76,3 +89,21 @@ class TestVolumeScanner:
 
         bars = [BarSnapshot(symbol="NIFTY", interval="60", open=18100.0, close=18100.0, high=18110.0, low=18090.0, volume=100000, timestamp=float(1000000 + i * 60)) for i in range(60)]
         assert not VolumeScanner().scan(bars, symbol="NIFTY").has_signal
+
+
+class TestScannerSignalStorage:
+    def test_scanner_signal_stored_in_db(self, db: DatabaseManager) -> None:
+        from ops_api.models import NormalizedSignal, SignalSide
+
+        sig = NormalizedSignal(
+            symbol="NIFTY", side=SignalSide.BUY, strategy="MOMENTUM",
+            price=18200.0, source="scanner", reason="Test signal",
+        )
+        signal_dict = sig.model_dump()
+        signal_dict["normalized_at"] = "2026-05-20T10:00:00.000Z"
+        db.insert_signal(signal_dict)
+
+        recent = db.get_recent_signals(limit=10)
+        assert any(s["id"] == sig.id for s in recent)
+        stored = next(s for s in recent if s["id"] == sig.id)
+        assert stored["source"] == "scanner"
