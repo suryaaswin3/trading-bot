@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS normalized_signals (
     price REAL NOT NULL DEFAULT 0.0,
     signal_timestamp TEXT,
     reason TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'webhook',
     data_source TEXT NOT NULL DEFAULT 'production',
     normalized_at TEXT NOT NULL
 );
