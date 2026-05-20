@@ -32,6 +32,7 @@ from ops_api.models import (
 from ops_api.notifier import TelegramNotifier, create_notifier
 from ops_api.risk_engine import RiskEngine
 from ops_api.market_data import OHLCVCache
+from ops_api.scan_metrics import ScanMetrics
 from ops_api.scanner import MomentumScanner, VolumeScanner
 from ops_api.scheduler import ScanScheduler
 from ops_api.strategies import DefaultStrategy, StrategyRegistry
@@ -48,6 +49,7 @@ executor: ExecutionEngine | None = None
 notifier: TelegramNotifier | None = None
 strategy_engine: StrategyEngine | None = None
 scanner_scheduler: ScanScheduler | None = None
+scan_metrics: ScanMetrics | None = None
 _shutdown = False
 
 
@@ -66,6 +68,7 @@ def _build_scan_callback(
     strategy_engine: StrategyEngine,
     db: DatabaseManager,
     cache: OHLCVCache,
+    metrics: ScanMetrics | None = None,
 ) -> Callable[[], None]:
     """Build the scanner callback closure for the scheduler tick."""
     from ops_api.market_data.kite_provider import KiteConnectMarketData
@@ -75,10 +78,15 @@ def _build_scan_callback(
     volume = VolumeScanner()
 
     def _scan_tick() -> None:
+        if metrics:
+            metrics.record_scan_start()
         for symbol in config.scanner_symbols:
             try:
                 bars = cache.get(symbol, "60")
-                if bars is None and provider is not None:
+                if bars is not None:
+                    if metrics: metrics.record_cache_hit()
+                elif provider is not None:
+                    if metrics: metrics.record_cache_miss()
                     bars = provider.fetch(symbol, interval="60", count=100)
                     if bars:
                         cache.set(symbol, "60", bars)
@@ -88,6 +96,8 @@ def _build_scan_callback(
                 for scanner, strategy_name in ((momentum, "MOMENTUM"), (volume, "RELATIVE_VOLUME")):
                     result = scanner.scan(bars, symbol=symbol, interval="60")
                     if result.has_signal and result.signal is not None:
+                        if metrics:
+                            metrics.record_signal(scanner.strategy_id)
                         signal_dict = result.signal.model_dump()
                         signal_dict["id"] = str(uuid4())
                         signal_dict["normalized_at"] = datetime.utcnow().isoformat()
@@ -96,6 +106,8 @@ def _build_scan_callback(
                         logger.info("Scanner signal: symbol={} strategy={} result={}", symbol, strategy_name, exec_result.get("status"))
             except Exception:
                 logger.exception("Scan tick error for symbol={}", symbol)
+        if metrics:
+            metrics.record_scan_end()
 
     return _scan_tick
 
@@ -103,7 +115,7 @@ def _build_scan_callback(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise DB, config, and services on startup."""
-    global config, db, validator, executor, notifier, strategy_engine, scanner_scheduler
+    global config, db, validator, executor, notifier, strategy_engine, scanner_scheduler, scan_metrics
 
     load_dotenv()
     config = load_ops_config()
@@ -178,6 +190,7 @@ async def lifespan(app: FastAPI):
 
     # ── Scanner Engine (Phase 2) ────────────────────────────────
     _market_cache = OHLCVCache(ttl_seconds=300)
+    scan_metrics = ScanMetrics()
     if config.scanner_enabled:
         _scan_cb = _build_scan_callback(
             kite_client=kite_client,
@@ -185,6 +198,7 @@ async def lifespan(app: FastAPI):
             strategy_engine=strategy_engine,
             db=db,
             cache=_market_cache,
+            metrics=scan_metrics,
         )
         scanner_scheduler = ScanScheduler(
             callback_fn=_scan_cb,
@@ -267,7 +281,14 @@ async def health() -> dict[str, Any]:
     if db is None:
         return {"status": "fail", "checks": []}
     tg_healthy = notifier.healthy if notifier else None
-    results = run_health_checks(db, config is not None, telegram_healthy=tg_healthy)
+    sched_running = scanner_scheduler.running if scanner_scheduler is not None else None
+    results = run_health_checks(
+        db,
+        config is not None,
+        telegram_healthy=tg_healthy,
+        scheduler_running=sched_running,
+        scan_metrics=scan_metrics,
+    )
     overall = "pass"
     for r in results:
         if r["status"] == "fail":
@@ -493,6 +514,8 @@ async def dashboard_data() -> dict[str, Any]:
         "kill_switch_history": kill_switch_history,
         "telegram_healthy": notifier.healthy if notifier else None,
         "recent_notifications": recent_notifications,
+        "scanner_metrics": scan_metrics.snapshot() if scan_metrics is not None else {},
+        "portfolio": db.get_portfolio_summary(),
     }
 
 
@@ -506,6 +529,7 @@ async def dashboard_analytics() -> dict[str, Any]:
         "pnl_by_strategy": db.get_pnl_by_strategy(limit=1000),
         "rejection_stats": db.get_rejection_stats(limit=100),
         "daily_pnl_history": db.get_daily_pnl_history(limit=30),
+        "strategy_performance": db.get_strategy_performance(),
     }
 
 
