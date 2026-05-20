@@ -23,7 +23,7 @@ Trading-specific directories:
 | `trading_bot/` | Polling-loop trading bot — strategy execution, Kite Connect client, state management |
 | `ops_api/` | FastAPI backend — webhook ingestion, validation, execution, controls, health, DB |
 | `dashboard/` | **OLD** Streamlit frontend (being abandoned) |
-| `trading-term/` | **NEW** Next.js frontend (empty — not yet initialized) |
+| `trading-term/` | **NEW** Next.js frontend (v0.6.0 — all 6 panels operational) |
 | `systemd/` | systemd service unit files for VPS deployment |
 | `deploy.sh` | One-time VPS setup script (deps, systemd, cron) |
 | `start_bot.py` | Entry point: generates access token then launches trading loop |
@@ -58,7 +58,13 @@ TradingView Alert
        |                        PaperBroker (simulated fills w/ slippage)
        |                        OR KiteClient (live orders — currently unused)
        v
-  SQLite (execution_orders, position_snapshots, risk_counters)
+  PositionManager (post-fill) ───→ ops_api/position_manager.py
+       |                         open_or_adjust() — lifecycle (same-side adjust,
+       |                         opposite-side reduce/close/reverse)
+       |                         Realized PnL computed on reduce/close
+       |                         Backward compat: bot_status + position_snapshots
+       v
+  SQLite (positions, execution_orders, position_snapshots, risk_counters)
 
 === Parallel System ===
 
@@ -91,6 +97,16 @@ TradingView Alert
 | `health.py` | Health check aggregation, heartbeat writing |
 | `notifier.py` | TelegramNotifier — alert_system, alert_trade, alert_error |
 | `sensitive.py` | Payload redaction/sanitization utilities |
+| `position_models.py` | Phase 4 — PositionState, PortfolioSnapshot, PositionMutationResult dataclasses |
+| `position_manager.py` | Phase 4 — lifecycle (open/adjust/reduce/close/reverse), PnL, MTM, portfolio, flatten |
+| `risk_engine.py` | Phase 1+4 — kill switch + per-strategy limits + position-aware checks |
+| `strategy_engine.py` | Phase 1 — Strategy registry routing + validation + risk + execution orchestration |
+| `strategies/` | Phase 1 — BaseStrategy ABC, StrategyRegistry, DefaultStrategy |
+| `indicators.py` | Phase 2 — Pure-function EMA, ATR, VWAP |
+| `market_data/` | Phase 2 — OHLCVCache, KiteConnectMarketData provider |
+| `scanner/` | Phase 2 — BaseScanner ABC, MomentumScanner, VolumeScanner |
+| `scheduler.py` | Phase 2 — ScanScheduler daemon thread with heartbeat metrics |
+| `scan_metrics.py` | Phase 3 — Thread-safe ScanMetrics singleton
 
 Key endpoints:
 - `GET /health` — Aggregate health checks
@@ -116,7 +132,7 @@ Key endpoints:
 
 ### Database Schema (SQLite WAL mode)
 
-**Tables:** webhook_alerts, normalized_signals, validation_results, execution_orders, position_snapshots, bot_status, bot_commands, health_checks, heartbeats, control_events, risk_counters, kill_switch_events, notification_log
+**Tables:** webhook_alerts, normalized_signals, validation_results, execution_orders, positions, position_snapshots, bot_status, bot_commands, health_checks, heartbeats, control_events, risk_counters, kill_switch_events, notification_log
 
 Key design:
 - All timestamps stored as ISO-8601 UTC strings
@@ -125,6 +141,7 @@ Key design:
 - bot_status is singleton row (id=1)
 - dedup_key unique constraint on execution_orders
 - kill_switch columns live on bot_status table
+- positions table has partial unique index: `ON positions(symbol) WHERE status = 'open'` — one open per symbol, unlimited closed history
 
 ### Deployment Architecture (VPS)
 
@@ -165,7 +182,7 @@ Log path: `/var/log/trading-bot/`
 
 ### Frontend Migration Status
 - **Streamlit dashboard** (`dashboard/app.py`) — functional but unstable, being abandoned
-- **New Next.js frontend** (`trading-term/`) — v0.3.0, operational
+- **New Next.js frontend** (`trading-term/`) — v0.6.0, operational
   - 6 panels: TopStatusBar, ExecutionFeed, PositionPanel, PnLRiskPanel, SignalFeed, ControlsPanel
   - 3 polling hooks: `useDashboardData` (7s), `useExecutionFeed` (3s), `useApiStatus` (10s)
   - Same-origin API proxy via Next.js `rewrites()`: `/api/backend/*` → `http://127.0.0.1:8080/*`
@@ -183,6 +200,16 @@ Log path: `/var/log/trading-bot/`
 - **Nginx** — Reverse proxy on port 80 for TradingView webhooks (`ops_api/nginx-tradingview.conf`)
 - **FastAPI binding** — Changed from `0.0.0.0` to `127.0.0.1` in `systemd/ops-api.service`
 - **Source IP** — Backend reads `X-Real-IP` header when behind proxy (fallback: `X-Forwarded-For`, then `request.client.host`)
+
+### Position Management (Phase 4 — 2026-05-21)
+- **One net position per symbol** — Partial unique index `WHERE status = 'open'` enforces this at DB level
+- **BUY/SELL → LONG/SHORT mapping** — Trading actions (from signals) map to position sides internally
+- **Weighted average entry** — Same-side adjust computes `(old_price * old_qty + new_price * new_qty) / total_qty`
+- **PnL direction** — LONG close: `(exit - entry) * qty * 1`, SHORT close: `(exit - entry) * qty * -1`
+- **Reversal semantics** — Opposite-side larger qty first CLOSEs existing lifecycle, then OPENS new one (two distinct rows)
+- **MTM purity** — `mark_to_market()` only touches current_price and unrealized_pnl (never realized_pnl)
+- **Additive migration** — PositionManager=None is valid no-op everywhere (RiskEngine, ExecutionEngine, StrategyEngine)
+- **Backward compat** — `update_bot_status_position_compat()` + `insert_position_snapshot_for_compat()` bridge legacy consumers
 
 ## Important Safety Rules
 
