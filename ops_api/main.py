@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import signal
 from contextlib import asynccontextmanager, suppress
-from typing import Any
+from typing import Any, Callable
 from datetime import datetime
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -29,6 +30,12 @@ from ops_api.models import (
     WebhookResponse,
 )
 from ops_api.notifier import TelegramNotifier, create_notifier
+from ops_api.risk_engine import RiskEngine
+from ops_api.market_data import OHLCVCache
+from ops_api.scanner import MomentumScanner, VolumeScanner
+from ops_api.scheduler import ScanScheduler
+from ops_api.strategies import DefaultStrategy, StrategyRegistry
+from ops_api.strategy_engine import StrategyEngine
 from ops_api.validation import ValidationPipeline
 from ops_api.webhook import handle_tradingview_webhook
 
@@ -39,6 +46,8 @@ db: DatabaseManager | None = None
 validator: ValidationPipeline | None = None
 executor: ExecutionEngine | None = None
 notifier: TelegramNotifier | None = None
+strategy_engine: StrategyEngine | None = None
+scanner_scheduler: ScanScheduler | None = None
 _shutdown = False
 
 
@@ -51,10 +60,50 @@ def _handle_sigterm(signum: int, _frame) -> None:
 signal.signal(signal.SIGTERM, _handle_sigterm)
 
 
+def _build_scan_callback(
+    kite_client: Any,
+    config: OpsApiConfig,
+    strategy_engine: StrategyEngine,
+    db: DatabaseManager,
+    cache: OHLCVCache,
+) -> Callable[[], None]:
+    """Build the scanner callback closure for the scheduler tick."""
+    from ops_api.market_data.kite_provider import KiteConnectMarketData
+
+    provider = KiteConnectMarketData(kite_client) if kite_client else None
+    momentum = MomentumScanner()
+    volume = VolumeScanner()
+
+    def _scan_tick() -> None:
+        for symbol in config.scanner_symbols:
+            try:
+                bars = cache.get(symbol, "60")
+                if bars is None and provider is not None:
+                    bars = provider.fetch(symbol, interval="60", count=100)
+                    if bars:
+                        cache.set(symbol, "60", bars)
+                if not bars:
+                    continue
+
+                for scanner, strategy_name in ((momentum, "MOMENTUM"), (volume, "RELATIVE_VOLUME")):
+                    result = scanner.scan(bars, symbol=symbol, interval="60")
+                    if result.has_signal and result.signal is not None:
+                        signal_dict = result.signal.model_dump()
+                        signal_dict["id"] = str(uuid4())
+                        signal_dict["normalized_at"] = datetime.utcnow().isoformat()
+                        db.insert_signal(signal_dict)
+                        exec_result = strategy_engine.process(signal_dict, mode="paper")
+                        logger.info("Scanner signal: symbol={} strategy={} result={}", symbol, strategy_name, exec_result.get("status"))
+            except Exception:
+                logger.exception("Scan tick error for symbol={}", symbol)
+
+    return _scan_tick
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise DB, config, and services on startup."""
-    global config, db, validator, executor, notifier
+    global config, db, validator, executor, notifier, strategy_engine, scanner_scheduler
 
     load_dotenv()
     config = load_ops_config()
@@ -114,6 +163,36 @@ async def lifespan(app: FastAPI):
 
     executor = ExecutionEngine(config, db, kite_client=kite_client)
 
+    # ── Strategy Engine (Phase 1) ────────────────────────────────
+    _registry = StrategyRegistry()
+    _registry.register(DefaultStrategy())
+    _risk_engine = RiskEngine(db)
+    strategy_engine = StrategyEngine(
+        registry=_registry,
+        validator=validator,
+        executor=executor,
+        risk_engine=_risk_engine,
+        db=db,
+    )
+    logger.info("Strategy engine initialised with {} strategy(ies)", len(_registry.all()))
+
+    # ── Scanner Engine (Phase 2) ────────────────────────────────
+    _market_cache = OHLCVCache(ttl_seconds=300)
+    if config.scanner_enabled:
+        _scan_cb = _build_scan_callback(
+            kite_client=kite_client,
+            config=config,
+            strategy_engine=strategy_engine,
+            db=db,
+            cache=_market_cache,
+        )
+        scanner_scheduler = ScanScheduler(
+            callback_fn=_scan_cb,
+            interval_seconds=config.scanner_interval_seconds,
+        )
+        scanner_scheduler.start()
+        logger.info("Scanner engine started: {} symbols, interval={}s", len(config.scanner_symbols), config.scanner_interval_seconds)
+
     # Notify on startup
     notifier.alert_system(
         "Ops API started",
@@ -132,6 +211,9 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Ops API shutting down")
+    if scanner_scheduler is not None:
+        scanner_scheduler.stop()
+        logger.info("Scanner scheduler stopped")
     await notifier.close()
 
 
@@ -258,30 +340,37 @@ async def webhook_tradingview(request: Request) -> WebhookResponse | dict[str, A
         signal = next((s for s in signals if s["id"] == signal_id), None)
 
         if signal:
-            validation = validator.validate(signal)
-            validation_dict = validation.model_dump()
-            validation_dict["checks"] = [c.model_dump() for c in validation.checks]
-
-            result["validation_passed"] = validation.passed
-
-            # Execute via paper broker if validation passes
-            if validation.passed and executor is not None:
-                exec_result = executor.execute(
-                    signal, validation_dict, mode="paper"
-                )
+            if config.use_strategy_engine and strategy_engine is not None:
+                # New path: StrategyEngine wraps shared validation + execution
+                exec_result = strategy_engine.process(signal, mode="paper")
+                result["validation_passed"] = exec_result.get("validation_passed", False)
+                result["strategy_id"] = exec_result.get("strategy_id", "default")
                 result["execution"] = exec_result
+            else:
+                # Original path: direct validator to executor
+                validation = validator.validate(signal)
+                validation_dict = validation.model_dump()
+                validation_dict["checks"] = [c.model_dump() for c in validation.checks]
+                result["validation_passed"] = validation.passed
 
-                # Write heartbeat to refresh liveness after execution
-                if exec_result.get("status") == "filled":
-                    write_heartbeat(
-                        db=db,
-                        bot_status="running",
-                        bot_mode="paper",
-                        kite_connected=False,
+                if validation.passed and executor is not None:
+                    exec_result = executor.execute(
+                        signal, validation_dict, mode="paper"
                     )
+                    result["execution"] = exec_result
+                else:
+                    exec_result = None
 
-                # Send Telegram notification on successful fill
-                if exec_result.get("status") == "filled" and notifier is not None:
+            # Write heartbeat + Telegram notification (common to both paths)
+            if exec_result and exec_result.get("status") == "filled":
+                write_heartbeat(
+                    db=db,
+                    bot_status="running",
+                    bot_mode="paper",
+                    kite_connected=False,
+                )
+
+                if notifier is not None:
                     notifier.alert_trade(
                         event=f"Paper trade: {signal.get('strategy', 'unknown')}",
                         symbol=signal.get("symbol", ""),
