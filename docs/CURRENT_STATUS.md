@@ -5,7 +5,7 @@ description: Current operational status of the trading platform — verified sys
 
 # Trading Platform — CURRENT STATUS
 
-*Last updated: 2026-05-18*
+*Last updated: 2026-05-21*
 
 ## Operational Status
 
@@ -45,6 +45,15 @@ The following have been operationally verified through soak tests, concurrency t
 - Access token persistence (stored in env, refreshed daily via cron)
 - Systemd deployment (all three services operational)
 - VPS runtime behavior (graceful shutdown, restarts, log rotation)
+- **Phase 4 — PositionManager lifecycle (open/adjust/reduce/close/reverse with weighted avg entry)**
+- **Phase 4 — Realized PnL computation (LONG + SHORT direction-aware)**
+- **Phase 4 — MTM (unrealized PnL isolation, no realized_pnl mutation)**
+- **Phase 4 — Reversal semantics (close old lifecycle + open new, two distinct rows)**
+- **Phase 4 — Portfolio aggregation (exposure, PnL, concentration)**
+- **Phase 4 — Position-aware risk checks (per-symbol limit, exposure cap, concentration limit)**
+- **Phase 4 — Backward compat bridges (bot_status + position_snapshots preserved)**
+- **Phase 4 — Partial unique index (one open per symbol, unlimited closed history)**
+- **Phase 4 — 241 tests passing (51 new, zero regressions)**
 
 ## Kite Connect Status
 
@@ -155,12 +164,12 @@ Tests exist in `tests/ops_api/` and `tests/trading_bot/` for both subsystems:
 
 | Test Module | Coverage |
 |-------------|----------|
-| `tests/ops_api/` | Controls, DB, execution, health, notifier, validation, webhook |
+| `tests/ops_api/` | Controls, DB, execution, health, notifier, validation, webhook, strategies, risk engine, scan metrics, scheduler, position manager, indicators, scanners |
 | `tests/trading_bot/` | Config, data, main loop, risk, state, strategies |
 
 Run with: `uv run pytest tests/ops_api/ tests/trading_bot/`
 
-Note: Some tests may reference the `free-claude-code` proxy infrastructure. Trading-specific tests are isolated in the directories above.
+**Phase 4 test count:** 241 total in tests/ops_api/ (51 added: 30 position manager, 14 DB CRUD, 7 risk engine position-aware)
 
 ## Next Steps (Recommended Priority)
 
@@ -171,15 +180,38 @@ Note: Some tests may reference the `free-claude-code` proxy infrastructure. Trad
 - [x] Top status bar — bot status, mode, kite, heartbeat, kill switch, health, connection state
 - [x] Error/degraded/offline states — graceful fallback when backend unavailable
 
-### Phase 2 (Next)
-1. **Execution feed** — real-time order display from `/dashboard/data` with streaming updates
-2. **Position panel** — current position display (symbol, side, qty, entry price, PnL)
-3. **Control panel** — kill switch toggle, mode switch (paper/live), start/stop
-4. **PnL & Risk display** — daily PnL, drawdown, max loss indicator, trades today counter
-5. **Signal visibility** — incoming TradingView alert display with validation pass/fail per check
+### Phase 2 ✓ DONE
+- [x] Execution feed — real-time order display from `/dashboard/data` with scroll-stable feed
+- [x] Position panel — current position display (symbol, side, qty, entry price, PnL)
+- [x] Control panel — kill switch toggle, mode switch (paper/live), start/stop
+- [x] PnL & Risk display — daily PnL, drawdown, max loss indicator, trades today counter
+- [x] Signal visibility — incoming TradingView alert display with validation pass/fail per check
 
-### Phase 3+ (Future)
-6. **WebSocket system** — replace polling with streaming updates
-7. **Analytics** — equity curve, PnL by strategy, rejection stats charts
-8. **QA pass** — full integration test against live backend
-9. **Deploy new frontend** — switch systemd from Streamlit to Next.js
+### Phase 3 ✓ DONE
+- [x] Scheduler heartbeat metrics — tick/error counters, min/max/avg duration, uptime, missed ticks
+- [x] ScanMetrics singleton — cache hit rate, avg duration, signal tracking
+- [x] Strategy performance aggregation — trade_count, net_pnl, wins/losses per strategy
+- [x] Portfolio state queries — current positions, exposure, PnL summary
+- [x] Dashboard fields — scanner_metrics, portfolio, strategy_performance
+- [x] Scanner health check — reports scheduler state + metrics summary
+- [x] 190 tests passing (before Phase 4), zero regressions
+
+### Phase 4 ✓ DONE
+- [x] Position models — PositionState, PortfolioSnapshot, PositionMutationResult dataclasses
+- [x] PositionManager — lifecycle (open/adjust/reduce/close/reverse), PnL, MTM, portfolio, flatten
+- [x] DB positions schema — positions table with partial unique index, 9 CRUD methods
+- [x] RiskEngine position checks — per-symbol limit, exposure cap, concentration limit
+- [x] ExecutionEngine integration — post-fill PositionManager mutation
+- [x] StrategyEngine portfolio wiring — real PortfolioSnapshot instead of empty dict
+- [x] Dashboard fields — positions, portfolio_snapshot, closed_positions
+- [x] TypeScript types — PositionState, PortfolioSnapshot interfaces
+- [x] 241 tests passing (51 new), zero regressions
+
+### Phase 5 (Next — Breakout Quality + Regime Filtering)
+1. **Breakout quality scoring** — rate breakouts by volume confirmation, candle strength, market context
+2. **Regime filtering** — detect trending vs ranging markets, filter trades by regime
+3. **Scanner selectivity** — reduce false signals, add multi-timeframe confirmation
+4. **Autonomous session lifecycle** — self-contained trading sessions with entry/exit/cleanup
+5. **Disciplined execution** — enforce pre-defined trade plans, reduce ad-hoc signals
+6. **WebSocket streaming** — replace polling with streaming for scanner data
+7. **Analytics charts** — equity curve, PnL by strategy, rejection stats in frontend

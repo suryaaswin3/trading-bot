@@ -8,6 +8,17 @@
 | No WebSocket streaming | Polling only (Phase 3) | Acceptable for current operational needs |
 | Execution feed scroll stability | Unverified with real data | Needs >= 1 page of orders in DB |
 | Node.js not in PATH (Windows) | Installed at `%LOCALAPPDATA%\nodejs` | Use full path or add to PATH |
+| Single-position assumptions in dashboard | Phase 4 refactored backend to multi-position | Frontend PositionPanel still shows single legacy position via bot_status (positions array available) |
+
+## Recently Resolved (2026-05-21 — Phase 4)
+
+| Issue | Fix |
+|-------|-----|
+| **Single-position assumptions throughout runtime** | Replaced with PositionManager (one net position per symbol via partial unique index). BUY/SELL → LONG/SHORT mapping. Weighted average entry on adjust. Reversal lifecycle (close old + open new). |
+| **Portfolio state was legacy bot_status fields only** | PositionManager owns all state mutations. PortfolioSnapshot dataclass with exposure, PnL, concentration. RiskEngine position-aware checks. |
+| **No realized PnL tracking** | Realized PnL computed on reduce/close events using direction-aware formula. Stored as cumulative total on position rows. Individual trade PnL lives in executions/events. |
+| **MTM mutated realized PnL** | mark_to_market() now only touches current_price and unrealized_pnl. realized_pnl is append-only via executions. Verified with test_mtm_does_not_touch_realized. |
+| **DB positions lacked schema** | Added positions table with partial unique index (one open per symbol, unlimited closed). 9 CRUD methods. Backward compat bridges to bot_status and position_snapshots. |
 
 ## Recently Resolved (2026-05-19)
 
