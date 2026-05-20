@@ -65,6 +65,8 @@ class PositionManager:
           BUY -> LONG (opens/adjusts LONG, reduces/closes SHORT)
           SELL -> SHORT (opens/adjusts SHORT, reduces/closes LONG)
         """
+        if not symbol:
+            raise ValueError("symbol must not be empty")
         existing = self._db.get_position_by_symbol(symbol)
         prev = _row_to_state(existing) if existing else None
 

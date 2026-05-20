@@ -877,8 +877,8 @@ class DatabaseManager:
     # ── Positions (Phase 4) ──────────────────────────────────────────
 
     def upsert_open_position(self, symbol: str, side: str, quantity: int,
-                             entry_price: float, strategy_id: str = "") -> dict:
-        """UPSERT an open position for a symbol. Returns the row as dict."""
+                             entry_price: float, strategy_id: str = "") -> str:
+        """UPSERT an open position for a symbol. Returns the position id."""
         now = datetime.utcnow().isoformat()
         pos_id = str(uuid.uuid4())
         conn = self._connect()
@@ -901,14 +901,15 @@ class DatabaseManager:
             conn.commit()
         finally:
             conn.close()
-        return self.get_position_by_symbol(symbol)
+        return pos_id
 
-    def close_position(self, symbol: str, exit_price: float) -> dict:
-        """Close an open position. Computes and stores realized PnL."""
+    def close_position(self, symbol: str, exit_price: float) -> dict | None:
+        """Close an open position. Computes and stores realized PnL.
+        Returns None if no open position exists."""
         now = datetime.utcnow().isoformat()
         open_pos = self.get_position_by_symbol(symbol)
         if not open_pos:
-            raise ValueError(f"No open position for {symbol}")
+            return None
         direction = 1 if open_pos["side"] == "LONG" else -1
         realized = (exit_price - open_pos["entry_price"]) * open_pos["quantity"] * direction
         conn = self._connect()
@@ -917,6 +918,7 @@ class DatabaseManager:
                 UPDATE positions SET
                     status = 'closed',
                     closed_at = ?,
+                    quantity = 0,
                     current_price = ?,
                     realized_pnl = realized_pnl + ?,
                     updated_at = ?
@@ -927,13 +929,14 @@ class DatabaseManager:
             conn.close()
         return self._fetch_one("SELECT * FROM positions WHERE id = ?", (open_pos["id"],))
 
-    def reduce_position(self, symbol: str, reduce_qty: int, exit_price: float) -> dict:
-        """Reduce an open position by given qty. Computes realized PnL on reduced portion."""
+    def reduce_position(self, symbol: str, reduce_qty: int, exit_price: float) -> dict | None:
+        """Reduce an open position by given qty. Computes realized PnL on reduced portion.
+        Delegates to close_position when reduce_qty >= quantity."""
         open_pos = self.get_position_by_symbol(symbol)
         if not open_pos:
-            raise ValueError(f"No open position for {symbol}")
+            return None
         if reduce_qty >= open_pos["quantity"]:
-            raise ValueError("Use close_position() for full close")
+            return self.close_position(symbol, exit_price)
         direction = 1 if open_pos["side"] == "LONG" else -1
         realized = (exit_price - open_pos["entry_price"]) * reduce_qty * direction
         new_qty = open_pos["quantity"] - reduce_qty

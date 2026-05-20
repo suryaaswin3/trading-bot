@@ -35,7 +35,7 @@ class RiskEngine:
     def check(self, signal: dict[str, Any], strategy: BaseStrategy | None = None) -> bool:
         """Run all risk gates. Returns True if signal passes (safe to execute)."""
         # 1. Kill switch
-        ks = self._db.get_kill_switch_state()
+        ks = self._db.get_kill_switch_state() if self._db is not None else {"active": False}
         if ks.get("active", False):
             logger.warning("Risk block: kill switch active")
             return False
