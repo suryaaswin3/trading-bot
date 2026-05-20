@@ -132,6 +132,7 @@ class NormalizedSignal(BaseModel):
     price: float = 0.0
     signal_timestamp: datetime | None = None
     reason: str = ""
+    source: str = "webhook"
     normalized_at: datetime = Field(default_factory=datetime.utcnow)
 
 
