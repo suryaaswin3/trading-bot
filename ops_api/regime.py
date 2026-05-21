@@ -258,7 +258,8 @@ def _detect_candle_overlap(bars: list[dict[str, Any]],
 
 
 def detect_regime(bars: list[Any],
-                  config: RegimeConfig | None = None) -> RegimeState:
+                  config: RegimeConfig | None = None,
+                  allowed_regimes_override: tuple[str, ...] | None = None) -> RegimeState:
     """Classify market regime based on bar data.
 
     Parameters
@@ -268,6 +269,10 @@ def detect_regime(bars: list[Any],
         close, volume.
     config:
         Optional RegimeConfig. Defaults used if None.
+    allowed_regimes_override:
+        Optional tuple of regime names allowed for breakout (e.g.,
+        ``("TREND", "VOLATILE")``). Overrides the default TREND/VOLATILE-only
+        logic when set.
 
     Returns
     -------
@@ -396,7 +401,7 @@ def detect_regime(bars: list[Any],
         regime = "RANGE"
         confidence = 0.3
 
-    breakout_allowed = regime in ("TREND", "VOLATILE")
+    breakout_allowed = regime in (allowed_regimes_override if allowed_regimes_override is not None else ("TREND", "VOLATILE"))
 
     # Build unique reason list for the regime
     for r in reasons:

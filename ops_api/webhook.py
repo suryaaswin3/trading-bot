@@ -184,6 +184,7 @@ async def handle_tradingview_webhook(
     source_ip: str = "",
     signature_header: str | None = None,
     raw_body: bytes | None = None,
+    session_id: str = "",
 ) -> dict[str, Any]:
     """Process an incoming TradingView webhook.
 
@@ -264,6 +265,7 @@ async def handle_tradingview_webhook(
     signal_dict = signal.model_dump()
     signal_dict["normalized_at"] = _utcnow()
     signal_dict["data_source"] = "production"
+    signal_dict["session_id"] = session_id
     db.insert_signal(signal_dict)
 
     # Update alert with normalized_id

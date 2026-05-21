@@ -350,6 +350,7 @@ def confirm_signal(
     higher_tf_bars: list[Any],
     signal: dict[str, Any] | Any,
     config: ConfirmationConfig | None = None,
+    min_alignment_override: float | None = None,
 ) -> ConfirmationState:
     """Assess multi-timeframe confirmation for a breakout signal.
 
@@ -363,6 +364,9 @@ def confirm_signal(
         Dict with key ``side``. Optionally: price, symbol, strategy.
     config:
         Optional ConfirmationConfig. Defaults used if None.
+    min_alignment_override:
+        Override the minimum alignment threshold. When set, overrides
+        ``config.min_alignment``.
 
     Returns
     -------
@@ -436,7 +440,8 @@ def confirm_signal(
     # Exhaustion: reduce confidence but don't hard-reject
     confidence = alignment * ex_score
 
-    accepted = alignment >= config.min_alignment
+    min_alignment = min_alignment_override if min_alignment_override is not None else config.min_alignment
+    accepted = alignment >= min_alignment
 
     reason = "; ".join(reasons) if reasons else ("all_aligned" if accepted else f"low_alignment={alignment:.2f}")
 

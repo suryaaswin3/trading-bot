@@ -231,6 +231,64 @@ class TelegramNotifier:
             msg += f"\nDetail: {detail}"
         return self.send_sync(msg, severity, event)
 
+    # ── Phase 6 production alerts ──────────────────────────────────────────
+
+    def alert_live_warning(self) -> bool:
+        """CRITICAL alert when LIVE_TRADING is enabled.
+
+        Must be called at startup — this is the safety gate that makes
+        ``OA_LIVE_TRADING=true`` impossible to miss in the logs.
+        """
+        msg = (
+            "🚨 LIVE TRADING IS ENABLED\n"
+            "Real money execution is active.\n"
+            "Kill switch available at POST /control/kill"
+        )
+        return self.send_sync(msg, "CRITICAL", "live_trading")
+
+    def alert_shutdown(self, reason: str = "graceful shutdown") -> bool:
+        """INFO alert on graceful shutdown."""
+        return self.send_sync(
+            f"Bot shutting down\nReason: {reason}",
+            "INFO",
+            "shutdown",
+        )
+
+    def alert_crash(self, error: str = "", traceback: str = "") -> bool:
+        """ERROR alert when the process crashes unexpectedly."""
+        msg = f"Bot crashed!\nError: {error[:200] if error else 'unknown'}"
+        if traceback:
+            # Last 10 lines of traceback (Telegram has 4096 char limit)
+            tb_lines = traceback.strip().split("\n")
+            tb_trim = "\n".join(tb_lines[-10:])
+            msg += f"\n{tb_trim[:1500]}"
+        return self.send_sync(msg, "ERROR", "crash")
+
+    def alert_daily_summary(
+        self,
+        date: str = "",
+        trades: int = 0,
+        wins: int = 0,
+        losses: int = 0,
+        pnl: float = 0.0,
+        drawdown: float = 0.0,
+        status: str = "ACTIVE",
+    ) -> bool:
+        """INFO daily summary with key session metrics.
+
+        Call at market close or at scheduled daily summary time.
+        """
+        winrate = (wins / trades * 100) if trades > 0 else 0.0
+        msg = (
+            f"📊 Daily Summary — {date or 'today'}\n"
+            f"Status: {status}\n"
+            f"Trades: {trades} (W: {wins} / L: {losses})\n"
+            f"Win rate: {winrate:.1f}%\n"
+            f"PnL: {pnl:+.2f}\n"
+            f"Drawdown: {drawdown:.2f}"
+        )
+        return self.send_sync(msg, "INFO", "daily_summary")
+
     async def close(self) -> None:
         await self._http.aclose()
 

@@ -1,0 +1,25 @@
+[Unit]
+Description=Trading Bot Ops API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/trading-bot
+EnvironmentFile=/opt/trading-bot/.env
+ExecStart=/opt/trading-bot/.venv/bin/uv run uvicorn ops_api.main:app --host ${OA_HOST} --port ${OA_PORT}
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/trading-bot/ops-api-stdout.log
+StandardError=append:/var/log/trading-bot/ops-api-stderr.log
+SyslogIdentifier=ops-api
+
+# Security hardening
+NoNewPrivileges=true
+ProtectHome=false
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

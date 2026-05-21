@@ -5,8 +5,10 @@ __pycache__
 .ruff_cache
 .serena
 .venv
+.obsidian
 agent_workspace
 .env
+.env.example
 server.log
 debug-*.log
 .coverage
@@ -20,3 +22,6 @@ sshpass.exe
 ops_data.db
 node_modules/
 .next/
+free-claude-code/
+Untitled.md
+_parse*.ps1

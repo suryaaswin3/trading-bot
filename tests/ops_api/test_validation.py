@@ -66,8 +66,9 @@ class TestValidationPipeline:
             }
         )
         result = validator.validate(valid_signal)
-        # Should be rejected by staleness check since alert_id already exists
-        assert any(not c.passed and c.check == "duplicate_alert" for c in result.checks)
+        # Dedup is handled at the webhook layer, not in the validation pipeline.
+        # Verify the pipeline processes the signal without a duplicate_alert check.
+        assert not any(c.check == "duplicate_alert" for c in result.checks)
 
     def test_allowed_symbol_check(self, validator: ValidationPipeline) -> None:
         signal = {

@@ -9,6 +9,7 @@ Startup initialises SQLite schema. Graceful shutdown on SIGTERM.
 from __future__ import annotations
 
 import signal
+import asyncio
 from contextlib import asynccontextmanager, suppress
 from typing import Any, Callable
 from datetime import datetime
@@ -17,7 +18,7 @@ from uuid import uuid4
 import dataclasses
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
@@ -42,6 +43,8 @@ from ops_api.strategies import DefaultStrategy, StrategyRegistry
 from ops_api.strategy_engine import StrategyEngine
 from ops_api.validation import ValidationPipeline
 from ops_api.webhook import handle_tradingview_webhook
+from ops_api.session import SessionManager
+from ops_api.trade_plan import get_active_plan
 
 # ── Globals (set during lifespan) ────────────────────────────────────────
 
@@ -54,6 +57,7 @@ strategy_engine: StrategyEngine | None = None
 scanner_scheduler: ScanScheduler | None = None
 scan_metrics: ScanMetrics | None = None
 position_manager: PositionManager | None = None
+session_manager: SessionManager | None = None
 _shutdown = False
 
 
@@ -84,6 +88,7 @@ def _build_scan_callback(
     def _scan_tick() -> None:
         if metrics:
             metrics.record_scan_start()
+        plan = get_active_plan()
         for symbol in config.scanner_symbols:
             try:
                 bars = cache.get(symbol, "60")
@@ -103,14 +108,14 @@ def _build_scan_callback(
                         if metrics:
                             metrics.record_signal(scanner.strategy_id)
                         from ops_api.quality import score_breakout
-                        qs = score_breakout(bars, result.signal)
+                        qs = score_breakout(bars, result.signal, min_quality_override=plan.min_quality)
                         if metrics:
                             metrics.record_quality(qs.accepted, qs.reason)
                         if not qs.accepted:
                             logger.info("Quality reject {} {}: score={:.2f} reason={}", symbol, strategy_name, qs.total, qs.reason)
                             continue
                         from ops_api.regime import detect_regime
-                        rs = detect_regime(bars)
+                        rs = detect_regime(bars, allowed_regimes_override=plan.allowed_regimes)
                         if metrics:
                             metrics.record_regime(rs.regime, rs.breakout_allowed)
                         if not rs.breakout_allowed:
@@ -124,7 +129,7 @@ def _build_scan_callback(
                             if conf_bars:
                                 cache.set(symbol, "15", conf_bars)
                         if conf_bars:
-                            cs = confirm_signal(bars, conf_bars, result.signal)
+                            cs = confirm_signal(bars, conf_bars, result.signal, min_alignment_override=plan.min_alignment)
                             if metrics:
                                 metrics.record_confirmation(cs.accepted, cs.reason)
                             if not cs.accepted:
@@ -133,8 +138,13 @@ def _build_scan_callback(
                         signal_dict = result.signal.model_dump()
                         signal_dict["id"] = str(uuid4())
                         signal_dict["normalized_at"] = datetime.utcnow().isoformat()
+                        signal_dict["session_id"] = session_manager.current_session().session_id if session_manager and session_manager.active else ""
                         db.insert_signal(signal_dict)
-                        exec_result = strategy_engine.process(signal_dict, mode="paper")
+                        snap = session_manager.current_session().snapshot() if session_manager and session_manager.current_session() else None
+                        session_metrics = {"trades": snap.trades, "final_pnl": snap.pnl} if snap else {}
+                        exec_result = strategy_engine.process(
+                            signal_dict, mode="paper", session_metrics=session_metrics,
+                        )
                         logger.info("Scanner signal: symbol={} strategy={} result={}", symbol, strategy_name, exec_result.get("status"))
             except Exception:
                 logger.exception("Scan tick error for symbol={}", symbol)
@@ -147,7 +157,7 @@ def _build_scan_callback(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise DB, config, and services on startup."""
-    global config, db, validator, executor, notifier, strategy_engine, scanner_scheduler, scan_metrics, position_manager
+    global config, db, validator, executor, notifier, strategy_engine, scanner_scheduler, scan_metrics, position_manager, session_manager
 
     load_dotenv()
     config = load_ops_config()
@@ -224,10 +234,13 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Strategy engine initialised with {} strategy(ies)", len(_registry.all()))
 
-    # ── Scanner Engine (Phase 2) ────────────────────────────────
+    # ── Role-aware scanner init ────────────────────────────────────────
+    should_run_scanner = config.role in ("all", "scanner") and config.scanner_enabled
+
     _market_cache = OHLCVCache(ttl_seconds=300)
     scan_metrics = ScanMetrics()
-    if config.scanner_enabled:
+
+    if should_run_scanner:
         _scan_cb = _build_scan_callback(
             kite_client=kite_client,
             config=config,
@@ -241,29 +254,55 @@ async def lifespan(app: FastAPI):
             interval_seconds=config.scanner_interval_seconds,
         )
         scanner_scheduler.start()
-        logger.info("Scanner engine started: {} symbols, interval={}s", len(config.scanner_symbols), config.scanner_interval_seconds)
+        logger.info("Scanner engine started: {} symbols, interval={}s (role={})", len(config.scanner_symbols), config.scanner_interval_seconds, config.role)
+    else:
+        logger.info("Scanner engine disabled (role={}, scanner_enabled={})", config.role, config.scanner_enabled)
+
+    # ── Session Manager (Phase 5D) ──────────────────────────────
+    session_manager = SessionManager(db)
+    # Recover any incomplete session from a previous run
+    recovered = session_manager.recover_incomplete()
+    if recovered:
+        logger.info("Recovered session {} from previous run", recovered.session_id)
+
+    # Start a trading session for this run
+    session_manager.start_session(mode="paper" if kite_client is None else "live")
+    logger.info("Trading session started: {}", session_manager.current_session().session_id)
+
+    # ── Live trading safety gate ───────────────────────────────────────
+    if config.live_trading:
+        logger.critical("LIVE TRADING IS ENABLED — real money execution active")
+        notifier.alert_live_warning()
+    else:
+        logger.info("Live trading is DISABLED — paper mode only")
 
     # Notify on startup
     notifier.alert_system(
         "Ops API started",
-        f"Mode: {'live' if kite_client else 'paper'}, Port: {config.port}",
+        f"Role: {config.role}, Mode: {'live' if kite_client else 'paper'}, Port: {config.port}",
         "INFO",
     )
 
     logger.info(
-        "Ops API started: host={} port={} db={} telegram={}",
+        "Ops API started: role={} host={} port={} db={} telegram={} live={}",
+        config.role,
         config.host,
         config.port,
         config.db_path,
         bool(notifier._enabled),
+        config.live_trading,
     )
 
     yield
 
-    logger.info("Ops API shutting down")
+    logger.info("Ops API shutting down (role={})", config.role)
     if scanner_scheduler is not None:
         scanner_scheduler.stop()
         logger.info("Scanner scheduler stopped")
+    if session_manager is not None:
+        snap = session_manager.end_session()
+        if snap:
+            logger.info("Session ended: trades={} pnl={:.2f}", snap.trades, snap.pnl)
     await notifier.close()
 
 
@@ -318,12 +357,14 @@ async def health() -> dict[str, Any]:
         return {"status": "fail", "checks": []}
     tg_healthy = notifier.healthy if notifier else None
     sched_running = scanner_scheduler.running if scanner_scheduler is not None else None
+    scanner_status = db.get_scanner_status() if db else None
     results = run_health_checks(
         db,
         config is not None,
         telegram_healthy=tg_healthy,
         scheduler_running=sched_running,
         scan_metrics=scan_metrics,
+        scanner_status=scanner_status,
     )
     overall = "pass"
     for r in results:
@@ -380,6 +421,7 @@ async def webhook_tradingview(request: Request) -> WebhookResponse | dict[str, A
 
     sig_header = request.headers.get("X-Signature", "")
 
+    _sid = session_manager.current_session().session_id if session_manager and session_manager.active else ""
     result = await handle_tradingview_webhook(
         payload=payload,
         db=db,
@@ -387,6 +429,7 @@ async def webhook_tradingview(request: Request) -> WebhookResponse | dict[str, A
         source_ip=source_ip,
         signature_header=sig_header,
         raw_body=raw_body,
+        session_id=_sid,
     )
 
     # If received, run validation then execute if passed
@@ -399,7 +442,9 @@ async def webhook_tradingview(request: Request) -> WebhookResponse | dict[str, A
         if signal:
             if config.use_strategy_engine and strategy_engine is not None:
                 # New path: StrategyEngine wraps shared validation + execution
-                exec_result = strategy_engine.process(signal, mode="paper")
+                snap = session_manager.current_session().snapshot() if session_manager and session_manager.current_session() else None
+                sess_metrics = {"trades": snap.trades, "final_pnl": snap.pnl} if snap else {}
+                exec_result = strategy_engine.process(signal, mode="paper", session_metrics=sess_metrics)
                 result["validation_passed"] = exec_result.get("validation_passed", False)
                 result["strategy_id"] = exec_result.get("strategy_id", "default")
                 result["execution"] = exec_result
@@ -487,27 +532,25 @@ async def control_action(
     return result
 
 
-@app.get("/dashboard/data")
-async def dashboard_data() -> dict[str, Any]:
-    """Aggregated data payload for the Streamlit dashboard."""
-    if db is None:
-        raise HTTPException(status_code=503, detail="Service not initialised")
+# ── Shared dashboard data ────────────────────────────────────────────────
 
-    bot_status = db.get_bot_status() or {}
-    latest_hb = db.get_latest_heartbeat() or {}
-    recent_orders = db.get_recent_orders(limit=10)
-    recent_alerts = db.get_recent_alerts(limit=10)
-    recent_signals = db.get_recent_signals(limit=20)
-    recent_validations = db.get_recent_validations(limit=10)
-    recent_events = db.get_recent_events(limit=20)
-    recent_errors = db.get_recent_errors(limit=10)
-    position_history = db.get_position_history(limit=500)
-    equity_curve = db.get_equity_curve(limit=500)
-    kill_switch = db.get_kill_switch_state()
-    kill_switch_history = db.get_kill_switch_history(limit=10)
-    recent_notifications = db.get_recent_notifications(limit=10)
 
-    # Derive kite_connected from heartbeat freshness — stale = disconnected
+def _get_dashboard_data() -> dict[str, Any]:
+    """Aggregated dashboard payload used by both REST and WebSocket endpoints."""
+    bot_status = db.get_bot_status() or {}  # type: ignore[union-attr]
+    latest_hb = db.get_latest_heartbeat() or {}  # type: ignore[union-attr]
+    recent_orders = db.get_recent_orders(limit=10)  # type: ignore[union-attr]
+    recent_alerts = db.get_recent_alerts(limit=10)  # type: ignore[union-attr]
+    recent_signals = db.get_recent_signals(limit=20)  # type: ignore[union-attr]
+    recent_validations = db.get_recent_validations(limit=10)  # type: ignore[union-attr]
+    recent_events = db.get_recent_events(limit=20)  # type: ignore[union-attr]
+    recent_errors = db.get_recent_errors(limit=10)  # type: ignore[union-attr]
+    position_history = db.get_position_history(limit=500)  # type: ignore[union-attr]
+    equity_curve = db.get_equity_curve(limit=500)  # type: ignore[union-attr]
+    kill_switch = db.get_kill_switch_state()  # type: ignore[union-attr]
+    kill_switch_history = db.get_kill_switch_history(limit=10)  # type: ignore[union-attr]
+    recent_notifications = db.get_recent_notifications(limit=10)  # type: ignore[union-attr]
+
     _stale_hb_seconds = 300
     _hb_ts = latest_hb.get("timestamp", "") if latest_hb else ""
     _hb_stale = True
@@ -548,13 +591,67 @@ async def dashboard_data() -> dict[str, Any]:
         "equity_curve": equity_curve,
         "kill_switch": kill_switch,
         "kill_switch_history": kill_switch_history,
-        "telegram_healthy": notifier.healthy if notifier else None,
+        "telegram_healthy": notifier.healthy if notifier and notifier.healthy else None,
         "recent_notifications": recent_notifications,
         "scanner_metrics": scan_metrics.snapshot() if scan_metrics is not None else {},
-        "portfolio": db.get_portfolio_summary(),
+        "portfolio": db.get_portfolio_summary(),  # type: ignore[union-attr]
         "positions": [dataclasses.asdict(p) for p in position_manager.get_all_positions()] if position_manager is not None else [],
         "portfolio_snapshot": dataclasses.asdict(position_manager.get_portfolio()) if position_manager is not None else {},
+        # Analytics fields for charts
+        "pnl_by_strategy": db.get_pnl_by_strategy(limit=1000),  # type: ignore[union-attr]
+        "rejection_stats": db.get_rejection_stats(limit=100),  # type: ignore[union-attr]
+        "daily_pnl_history": db.get_daily_pnl_history(limit=30),  # type: ignore[union-attr]
     }
+
+
+@app.get("/dashboard/data")
+async def dashboard_data() -> dict[str, Any]:
+    """Aggregated data payload for the dashboard (REST fallback)."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Service not initialised")
+    return _get_dashboard_data()
+
+
+@app.websocket("/ws/dashboard")
+async def ws_dashboard(websocket: WebSocket) -> None:
+    """WebSocket endpoint for real-time dashboard updates.
+
+    On connect: sends full dashboard snapshot.
+    Then: heartbeats every 15s; disconnected clients are cleaned up.
+    """
+    if db is None:
+        await websocket.close(code=1011, reason="Service not initialised")
+        return
+
+    await websocket.accept()
+
+    # Send full snapshot on connect
+    try:
+        data = _get_dashboard_data()
+        await websocket.send_json({"type": "snapshot", "data": data})
+    except Exception:
+        logger.exception("Failed to send initial dashboard snapshot")
+        await websocket.close(code=1011)
+        return
+
+    try:
+        while True:
+            try:
+                msg = await asyncio.wait_for(websocket.receive_text(), timeout=15.0)
+                # Client sent something — currently unused, but reserved for
+                # future control messages (e.g. refresh request)
+                if msg == "ping":
+                    await websocket.send_json({"type": "pong"})
+            except asyncio.TimeoutError:
+                # Send heartbeat to detect stale connections
+                await websocket.send_json({
+                    "type": "heartbeat",
+                    "data": {"timestamp": datetime.utcnow().isoformat()},
+                })
+    except WebSocketDisconnect:
+        logger.debug("Dashboard WebSocket disconnected")
+    except Exception:
+        logger.exception("Dashboard WebSocket error")
 
 
 @app.get("/dashboard/analytics")
@@ -595,6 +692,35 @@ async def heartbeat_endpoint(
         kite_connected=body.get("kite_connected", False),
     )
 
+    return {"status": "ok"}
+
+
+@app.get("/plan/current")
+async def plan_current() -> dict[str, Any]:
+    """Return the current active trade plan."""
+    from ops_api.trade_plan import get_active_plan
+    return {"plan": get_active_plan().to_dict()}
+
+
+@app.post("/plan/load")
+async def plan_load(request: Request, _auth: None = Depends(_verify_api_key)) -> dict[str, Any]:
+    """Load a new trade plan from JSON body."""
+    from ops_api.trade_plan import TradePlan, set_active_plan
+    body: dict[str, Any] = {}
+    with suppress(Exception):
+        body = await request.json()
+    plan = TradePlan.from_dict(body)
+    set_active_plan(plan)
+    logger.info("Trade plan loaded: {}", plan.plan_id)
+    return {"status": "ok", "plan": plan.to_dict()}
+
+
+@app.post("/plan/reset")
+async def plan_reset(_auth: None = Depends(_verify_api_key)) -> dict[str, Any]:
+    """Reset trade plan to defaults."""
+    from ops_api.trade_plan import reset_plan
+    reset_plan()
+    logger.info("Trade plan reset to defaults")
     return {"status": "ok"}
 
 

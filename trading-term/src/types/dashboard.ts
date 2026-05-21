@@ -25,6 +25,10 @@ export interface DashboardData {
   positions?: PositionState[];
   portfolio_snapshot?: PortfolioSnapshot;
   closed_positions?: PositionState[];
+  equity_curve?: EquityPoint[];
+  pnl_by_strategy?: PnLByStrategy[];
+  rejection_stats?: RejectionStat[];
+  daily_pnl_history?: DailyPnlHistory[];
 }
 
 export interface CurrentPosition {
