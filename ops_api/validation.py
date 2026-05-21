@@ -202,6 +202,7 @@ class ValidationPipeline:
         # Store
         result_dict = result.model_dump()
         result_dict["checks"] = [c.model_dump() for c in checks]
+        result_dict["session_id"] = signal.get("session_id", "")
         self.db.insert_validation(result_dict)
 
         if all_passed:

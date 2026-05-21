@@ -269,7 +269,8 @@ def score_time_window(timestamp_epoch: float | None = None) -> float:
 
 def score_breakout(bars: list[dict[str, Any]] | list[Any],
                    signal: dict[str, Any] | Any,
-                   config: QualityConfig | None = None) -> QualityScore:
+                   config: QualityConfig | None = None,
+                   min_quality_override: float | None = None) -> QualityScore:
     """Assess breakout quality across all dimensions.
 
     Parameters
@@ -324,7 +325,8 @@ def score_breakout(bars: list[dict[str, Any]] | list[Any],
         + time_q * config.weight_time
     )
 
-    accepted = total >= config.min_quality
+    threshold = min_quality_override if min_quality_override is not None else config.min_quality
+    accepted = total >= threshold
 
     reasons = []
     if rvol < 0.3:

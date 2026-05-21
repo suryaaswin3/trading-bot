@@ -1,0 +1,25 @@
+[Unit]
+Description=Trading Bot Dashboard (Streamlit)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/trading-bot
+EnvironmentFile=/opt/trading-bot/.env
+ExecStart=/opt/trading-bot/.venv/bin/uv run streamlit run dashboard.py --server.port ${OA_DASHBOARD_PORT} --server.headless true
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/trading-bot/dashboard-stdout.log
+StandardError=append:/var/log/trading-bot/dashboard-stderr.log
+SyslogIdentifier=dashboard
+
+# Security hardening
+NoNewPrivileges=true
+ProtectHome=false
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

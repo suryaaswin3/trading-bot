@@ -169,6 +169,7 @@ class ExecutionEngine:
             "error_message": "",
             "created_at": _utcnow(),
             "updated_at": None,
+            "session_id": signal.get("session_id", ""),
         }
         self.db.insert_order(order)
 

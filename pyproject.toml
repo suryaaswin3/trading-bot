@@ -22,11 +22,16 @@ dependencies = [
     "openai>=2.33.0",
     "loguru>=0.7.0",
     "aiohttp>=3.13.4",
+    "kiteconnect>=5.0.0",
+    "pytz>=2024.2",
+    "streamlit>=1.57.0",
+    "plotly>=6.7.0",
 ]
 
 [project.scripts]
 free-claude-code = "cli.entrypoints:serve"
 fcc-init = "cli.entrypoints:init"
+trading-bot = "trading_bot.main:main"
 
 [project.optional-dependencies]
 voice = [
@@ -42,7 +47,7 @@ voice_local = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["api", "cli", "config", "core", "messaging", "providers"]
+packages = ["api", "cli", "config", "core", "messaging", "providers", "trading_bot", "ops_api", "dashboard"]
 
 [tool.hatch.build.targets.wheel.force-include]
 ".env.example" = "cli/env.example"
@@ -89,7 +94,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["api", "cli", "config", "core", "messaging", "providers", "smoke"]
+known-first-party = ["api", "cli", "config", "core", "messaging", "providers", "smoke", "trading_bot", "ops_api", "dashboard"]
 
 [tool.ruff.format]
 quote-style = "double"

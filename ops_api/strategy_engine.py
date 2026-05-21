@@ -13,6 +13,7 @@ from ops_api.position_manager import PositionManager
 from ops_api.position_models import PortfolioSnapshot
 from ops_api.strategies.base import BaseStrategy
 from ops_api.strategies.registry import StrategyRegistry
+from ops_api.trade_plan import get_active_plan
 from ops_api.validation import ValidationPipeline
 
 
@@ -39,6 +40,7 @@ class StrategyEngine:
         self,
         signal: dict[str, Any],
         mode: str = "paper",
+        session_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         # 1. Resolve strategy
         strategy = self.registry.get_for_signal(signal)
@@ -50,6 +52,13 @@ class StrategyEngine:
             return {"status": "rejected", "strategy_id": "", "error": "No strategy available"}
 
         logger.info("StrategyEngine: processing signal {} via strategy '{}'", signal.get("id", "unknown"), strategy.metadata.id)
+
+        # 1b. Plan enforcement gate (Phase 5D)
+        plan = get_active_plan()
+        plan_check = plan.check(session_metrics or {})
+        if not plan_check.approved:
+            logger.info("Plan gate rejected signal {}: {}", signal.get("id", "unknown"), plan_check.reason)
+            return {"status": "rejected", "strategy_id": strategy.metadata.id, "validation_passed": False, "error": f"Trade plan: {plan_check.reason}"}
 
         # 2. Shared validation
         validation_result = self.validator.validate(signal)

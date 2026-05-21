@@ -206,6 +206,61 @@ CREATE TABLE IF NOT EXISTS notification_log (
     error_message TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+-- Trading sessions (Phase 5D)
+CREATE TABLE IF NOT EXISTS trading_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT UNIQUE NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    start_timestamp TEXT NOT NULL,
+    end_timestamp TEXT,
+    mode TEXT NOT NULL DEFAULT 'paper',
+    initial_capital REAL NOT NULL DEFAULT 0.0,
+    final_pnl REAL NOT NULL DEFAULT 0.0,
+    trades INTEGER NOT NULL DEFAULT 0,
+    wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    max_drawdown REAL NOT NULL DEFAULT 0.0,
+    peak_pnl REAL NOT NULL DEFAULT 0.0,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON trading_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_sessions_time ON trading_sessions(start_timestamp);
+
+-- Cooldown state (singleton row, id=1)
+CREATE TABLE IF NOT EXISTS cooldown_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    date TEXT NOT NULL,
+    cooldown_seconds INTEGER NOT NULL DEFAULT 0,
+    remaining_seconds INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    expires_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+-- Trade plan persistence (singleton row, id=1)
+CREATE TABLE IF NOT EXISTS trade_plans (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    plan_data TEXT NOT NULL DEFAULT '{}',
+    loaded_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- Scanner process status (singleton row, id=1)
+CREATE TABLE IF NOT EXISTS scanner_status (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    process_id TEXT NOT NULL DEFAULT '',
+    pid INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'stopped',
+    last_tick_at TEXT,
+    tick_count INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    market_phase TEXT NOT NULL DEFAULT '',
+    uptime_seconds REAL NOT NULL DEFAULT 0.0,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -298,6 +353,16 @@ class DatabaseManager:
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_open_symbol ON positions(symbol) WHERE status = 'open'")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status)")
 
+            # Add session_id columns (Phase 5D) — safe for existing databases
+            for col in ("session_id TEXT DEFAULT ''",):
+                for table in ("normalized_signals", "execution_orders", "validation_results"):
+                    with contextlib.suppress(sqlite3.OperationalError):
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_session ON normalized_signals(session_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_session ON execution_orders(session_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_validations_session ON validation_results(session_id)")
+
             conn.commit()
         finally:
             conn.close()
@@ -354,8 +419,8 @@ class DatabaseManager:
             conn.execute(
                 """INSERT INTO normalized_signals
                    (id, webhook_alert_id, alert_id, symbol, side, strategy, timeframe,
-                    price, signal_timestamp, reason, source, normalized_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    price, signal_timestamp, reason, source, normalized_at, session_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     signal["id"],
                     signal.get("webhook_alert_id", ""),
@@ -369,6 +434,7 @@ class DatabaseManager:
                     signal.get("reason", ""),
                     signal.get("source", "webhook"),
                     signal.get("normalized_at", _now_utc()),
+                    signal.get("session_id", ""),
                 ),
             )
             conn.commit()
@@ -393,8 +459,8 @@ class DatabaseManager:
         try:
             conn.execute(
                 """INSERT INTO validation_results
-                   (id, signal_id, passed, checks, rejection_reason, validated_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   (id, signal_id, passed, checks, rejection_reason, validated_at, session_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     validation["id"],
                     validation.get("signal_id", ""),
@@ -402,6 +468,7 @@ class DatabaseManager:
                     json.dumps(validation.get("checks", [])),
                     validation.get("rejection_reason", ""),
                     validation.get("validated_at", _now_utc()),
+                    validation.get("session_id", ""),
                 ),
             )
             conn.commit()
@@ -438,8 +505,8 @@ class DatabaseManager:
                 """INSERT INTO execution_orders
                    (id, signal_id, validation_id, mode, symbol, side, quantity, price,
                     order_type, status, external_order_id, strategy, dedup_key,
-                    error_message, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    error_message, created_at, updated_at, session_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     order["id"],
                     order.get("signal_id", ""),
@@ -457,6 +524,7 @@ class DatabaseManager:
                     order.get("error_message", ""),
                     order.get("created_at", _now_utc()),
                     order.get("updated_at"),
+                    order.get("session_id", ""),
                 ),
             )
             conn.commit()
@@ -1203,6 +1271,189 @@ class DatabaseManager:
                 (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    # ── Trading Sessions (Phase 5D) ─────────────────────────────────
+
+    def insert_session(self, session: dict[str, Any]) -> None:
+        """Persist a new trading session."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO trading_sessions
+                   (session_id, status, start_timestamp, end_timestamp, mode,
+                    initial_capital, final_pnl, trades, wins, losses,
+                    max_drawdown, peak_pnl, metadata, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session.get("session_id", ""),
+                    session.get("status", "ACTIVE"),
+                    session.get("start_timestamp", ""),
+                    session.get("end_timestamp"),
+                    session.get("mode", "paper"),
+                    session.get("initial_capital", 0.0),
+                    session.get("final_pnl", 0.0),
+                    session.get("trades", 0),
+                    session.get("wins", 0),
+                    session.get("losses", 0),
+                    session.get("max_drawdown", 0.0),
+                    session.get("peak_pnl", 0.0),
+                    "{}",
+                    _now_utc(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_active_session(self) -> dict[str, Any] | None:
+        """Get the most recent ACTIVE session."""
+        return self._fetch_one(
+            "SELECT * FROM trading_sessions WHERE status IN ('ACTIVE', 'RECOVERED') ORDER BY start_timestamp DESC LIMIT 1"
+        )
+
+    def update_session_status(self, session_id: str, status: str, metadata: str | None = None) -> None:
+        conn = self._connect()
+        try:
+            if metadata is not None:
+                conn.execute(
+                    "UPDATE trading_sessions SET status = ?, metadata = ? WHERE session_id = ?",
+                    (status, metadata, session_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE trading_sessions SET status = ? WHERE session_id = ?",
+                    (status, session_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def update_session_metadata(self, session_id: str, metadata: str) -> None:
+        """Persist session metadata (e.g., state dict) without changing status."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE trading_sessions SET metadata = ? WHERE session_id = ?",
+                (metadata, session_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def update_session_end(self, session_id: str, end_timestamp: str,
+                           final_pnl: float, trades: int, wins: int,
+                           losses: int, max_drawdown: float, peak_pnl: float) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """UPDATE trading_sessions SET
+                   status = 'CLOSED', end_timestamp = ?, final_pnl = ?,
+                   trades = ?, wins = ?, losses = ?,
+                   max_drawdown = ?, peak_pnl = ?
+                   WHERE session_id = ?""",
+                (end_timestamp, final_pnl, trades, wins, losses, max_drawdown, peak_pnl, session_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Get recent sessions ordered by start time descending."""
+        return self._fetch_all(
+            "SELECT * FROM trading_sessions ORDER BY start_timestamp DESC LIMIT ?",
+            (limit,),
+        )
+
+    # ── Cooldown State ─────────────────────────────────────────────────
+
+    def get_cooldown_state(self) -> dict[str, Any] | None:
+        """Read singleton cooldown row."""
+        return self._fetch_one("SELECT * FROM cooldown_state WHERE id = 1")
+
+    def upsert_cooldown_state(self, state: dict[str, Any]) -> None:
+        """Write singleton cooldown row."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO cooldown_state (id, date, cooldown_seconds, remaining_seconds,
+                   started_at, expires_at, updated_at)
+                   VALUES (1, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                   date=excluded.date, cooldown_seconds=excluded.cooldown_seconds,
+                   remaining_seconds=excluded.remaining_seconds,
+                   started_at=excluded.started_at, expires_at=excluded.expires_at,
+                   updated_at=excluded.updated_at""",
+                (
+                    state["date"],
+                    state.get("cooldown_seconds", 0),
+                    state.get("remaining_seconds", 0),
+                    state.get("started_at", ""),
+                    state.get("expires_at"),
+                    state.get("updated_at", ""),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # ── Trade Plan Persistence ─────────────────────────────────────────
+
+    def get_trade_plan(self) -> dict[str, Any] | None:
+        """Read persisted trade plan singleton."""
+        return self._fetch_one("SELECT * FROM trade_plans WHERE id = 1")
+
+    def upsert_trade_plan(self, plan_data: dict[str, Any]) -> None:
+        """Persist trade plan as JSON."""
+        conn = self._connect()
+        try:
+            now = _now_utc()
+            existing = self._fetch_one("SELECT loaded_at FROM trade_plans WHERE id = 1")
+            loaded_at = existing["loaded_at"] if existing else now
+            conn.execute(
+                "INSERT INTO trade_plans (id, plan_data, loaded_at, updated_at) VALUES (1, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET plan_data=excluded.plan_data, updated_at=excluded.updated_at",
+                (json.dumps(plan_data), loaded_at, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # ── Scanner Status ─────────────────────────────────────────────────
+
+    def get_scanner_status(self) -> dict[str, Any] | None:
+        """Read scanner process status singleton."""
+        return self._fetch_one("SELECT * FROM scanner_status WHERE id = 1")
+
+    def upsert_scanner_status(self, status: dict[str, Any]) -> None:
+        """Write scanner process status singleton."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO scanner_status (id, process_id, pid, status, last_tick_at,
+                   tick_count, error_count, market_phase, uptime_seconds, started_at, updated_at)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                   process_id=excluded.process_id, pid=excluded.pid,
+                   status=excluded.status, last_tick_at=excluded.last_tick_at,
+                   tick_count=excluded.tick_count, error_count=excluded.error_count,
+                   market_phase=excluded.market_phase, uptime_seconds=excluded.uptime_seconds,
+                   updated_at=excluded.updated_at""",
+                (
+                    status.get("process_id", ""),
+                    status.get("pid", 0),
+                    status.get("status", "stopped"),
+                    status.get("last_tick_at"),
+                    status.get("tick_count", 0),
+                    status.get("error_count", 0),
+                    status.get("market_phase", ""),
+                    status.get("uptime_seconds", 0.0),
+                    status.get("started_at", _now_utc()),
+                    status.get("updated_at", _now_utc()),
+                ),
+            )
+            conn.commit()
         finally:
             conn.close()
 

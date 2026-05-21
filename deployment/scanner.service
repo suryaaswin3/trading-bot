@@ -1,0 +1,25 @@
+[Unit]
+Description=Trading Bot Scanner Process
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/trading-bot
+EnvironmentFile=/opt/trading-bot/.env
+ExecStart=/opt/trading-bot/.venv/bin/uv run python scanner_runner.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/trading-bot/scanner-stdout.log
+StandardError=append:/var/log/trading-bot/scanner-stderr.log
+SyslogIdentifier=scanner
+
+# Security hardening
+NoNewPrivileges=true
+ProtectHome=false
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

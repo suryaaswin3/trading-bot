@@ -73,6 +73,17 @@ class OpsApiConfig:
         default_factory=lambda: ("NIFTY", "BANKNIFTY")
     )
 
+    # ── VPS Deployment (Phase 6) ────────────────────────────────
+    role: str = "all"
+    """Process role: ``all`` (default, scanner+API), ``api`` (no scanner),
+    ``scanner`` (standalone runner)."""
+    live_trading: bool = False
+    """Must be explicitly set to ``true`` for real-money execution."""
+    log_dir: str = "/var/log/trading-bot"
+    """Root directory for log files (created at runtime if needed)."""
+    auto_market_detection: bool = True
+    """If True, scanner auto-starts/stops with market hours."""
+
     def validate(self) -> list[str]:
         """Run startup validation. Returns list of warning/error messages.
 
@@ -109,6 +120,17 @@ class OpsApiConfig:
         if self.retention_days < 1:
             issues.append(f"[WARN] OA_RETENTION_DAYS={self.retention_days} — disabling cleanup")
 
+        if self.live_trading:
+            issues.append(
+                "[WARN] OA_LIVE_TRADING=True — REAL MONEY EXECUTION IS ENABLED"
+            )
+
+        if self.role not in ("all", "api", "scanner"):
+            issues.append(f"[ERR] OA_ROLE={self.role!r} — must be 'all', 'api', or 'scanner'")
+
+        if self.role == "all":
+            issues.append("[WARN] OA_ROLE=all — legacy combined mode, prefer separate services")
+
         return issues
 
     def has_fatal_issues(self) -> bool:
@@ -125,7 +147,10 @@ def load_ops_config() -> OpsApiConfig:
     kwargs = {}
 
     # Manual mapping for type coercion
-    bool_keys = {"OA_RELOAD", "OA_FLATTEN_ON_KILL", "OA_USE_STRATEGY_ENGINE", "OA_SCANNER_ENABLED"}
+    bool_keys = {
+        "OA_RELOAD", "OA_FLATTEN_ON_KILL", "OA_USE_STRATEGY_ENGINE",
+        "OA_SCANNER_ENABLED", "OA_LIVE_TRADING", "OA_AUTO_MARKET_DETECTION",
+    }
     int_keys = {
         "OA_PORT",
         "OA_DASHBOARD_PORT",

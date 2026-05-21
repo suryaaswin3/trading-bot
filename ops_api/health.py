@@ -145,8 +145,54 @@ def check_telegram(
 def check_scanner(
     scheduler_running: bool | None = None,
     scan_metrics: ScanMetrics | None = None,
+    scanner_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Report scanner engine health and metrics."""
+    """Report scanner engine health and metrics.
+
+    When *scanner_status* is provided (from the ``scanner_status`` DB table),
+    its data takes precedence — this is how the API process monitors the
+    standalone scanner process across process boundaries.
+    """
+    # If we have scanner_status from the DB (standalone scanner process)
+    if scanner_status is not None:
+        status = scanner_status.get("status", "unknown")
+        tick_count = scanner_status.get("tick_count", 0)
+        error_count = scanner_status.get("error_count", 0)
+        market_phase = scanner_status.get("market_phase", "")
+        last_tick_at = scanner_status.get("last_tick_at", "")
+        uptime = scanner_status.get("uptime_seconds", 0)
+
+        if status == "running":
+            # Check if the last tick is stale
+            stale = False
+            if last_tick_at:
+                try:
+                    delta = (datetime.utcnow() - datetime.fromisoformat(last_tick_at)).total_seconds()
+                    if delta > _STALE_SECONDS:
+                        stale = True
+                except (ValueError, TypeError):
+                    pass
+            if stale:
+                return {
+                    "component": "scanner_engine",
+                    "status": "warn",
+                    "detail": f"Scanner heartbeat stale (last tick {last_tick_at})",
+                }
+            return {
+                "component": "scanner_engine",
+                "status": "pass",
+                "detail": (
+                    f"Scanner running | ticks={tick_count} errors={error_count} "
+                    f"phase={market_phase} uptime={uptime:.0f}s"
+                ),
+            }
+        elif status == "stopped":
+            return {"component": "scanner_engine", "status": "warn", "detail": "Scanner process is stopped"}
+        elif status == "error":
+            return {"component": "scanner_engine", "status": "fail", "detail": f"Scanner in error state ({error_count} errors)"}
+        return {"component": "scanner_engine", "status": "warn", "detail": f"Scanner status: {status}"}
+
+    # Fallback: use the old scheduler_running / scan_metrics approach
     if scheduler_running is None:
         return {"component": "scanner_engine", "status": "pass", "detail": "Scanner not configured"}
     if not scheduler_running:
@@ -158,6 +204,23 @@ def check_scanner(
     return {"component": "scanner_engine", "status": "pass", "detail": " | ".join(parts)}
 
 
+def check_memory() -> dict[str, Any]:
+    """Read RSS memory usage from ``/proc/self/status`` (Linux only)."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        kb = int(parts[1])
+                        mb = kb / 1024
+                        return {"component": "memory", "status": "pass", "detail": f"RSS {mb:.0f} MB"}
+                    break
+        return {"component": "memory", "status": "pass", "detail": "RSS not available"}
+    except (FileNotFoundError, IOError, ValueError):
+        return {"component": "memory", "status": "pass", "detail": "Not available (non-Linux)"}
+
+
 _HEALTH_COUNTER = 0
 
 
@@ -167,6 +230,7 @@ def run_health_checks(
     telegram_healthy: bool | None = None,
     scheduler_running: bool | None = None,
     scan_metrics: ScanMetrics | None = None,
+    scanner_status: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Run all health checks and return results."""
     global _HEALTH_COUNTER
@@ -177,10 +241,11 @@ def run_health_checks(
         check_database(db),
         check_config(config_loaded),
         check_bot(db),
+        check_memory(),
         check_kill_switch(db),
         check_kite(db),
         check_telegram(telegram_healthy),
-        check_scanner(scheduler_running, scan_metrics),
+        check_scanner(scheduler_running, scan_metrics, scanner_status),
     ]
 
     for r in results:
