@@ -14,6 +14,8 @@ class ScanMetrics:
     signals_accepted: int = 0
     signals_rejected: int = 0
     rejection_reasons: dict[str, int] = field(default_factory=dict)
+    regime_classifications: dict[str, int] = field(default_factory=dict)
+    regime_rejected: int = 0
     scanner_hits: dict[str, int] = field(default_factory=dict)
     cache_hits: int = 0
     cache_misses: int = 0
@@ -36,6 +38,12 @@ class ScanMetrics:
         with self._lock:
             self.signals_found += 1
             self.scanner_hits[scanner_id] = self.scanner_hits.get(scanner_id, 0) + 1
+
+    def record_regime(self, regime: str, breakout_allowed: bool) -> None:
+        with self._lock:
+            self.regime_classifications[regime] = self.regime_classifications.get(regime, 0) + 1
+            if not breakout_allowed:
+                self.regime_rejected += 1
 
     def record_cache_hit(self) -> None:
         with self._lock:
@@ -70,6 +78,8 @@ class ScanMetrics:
                 "signals_accepted": self.signals_accepted,
                 "signals_rejected": self.signals_rejected,
                 "rejection_reasons": dict(self.rejection_reasons),
+                "regime_classifications": dict(self.regime_classifications),
+                "regime_rejected": self.regime_rejected,
                 "scanner_hits": dict(self.scanner_hits),
                 "cache_hits": self.cache_hits,
                 "cache_misses": self.cache_misses,
