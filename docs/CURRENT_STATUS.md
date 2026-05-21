@@ -54,6 +54,13 @@ The following have been operationally verified through soak tests, concurrency t
 - **Phase 4 — Backward compat bridges (bot_status + position_snapshots preserved)**
 - **Phase 4 — Partial unique index (one open per symbol, unlimited closed history)**
 - **Phase 4 — 241 tests passing (51 new, zero regressions)**
+- **Phase 5A — Breakout quality scoring (6 dimensions: RVOL, candle, VWAP, EMA, range, time)**
+- **Phase 5A — score_breakout() aggregation with weighted total + accept/reject gate**
+- **Phase 5A — QualityScore dataclass with component scores, total, reason string**
+- **Phase 5A — QualityConfig with tunable thresholds and weights (default sum to 1.0)**
+- **Phase 5A — Integration in _scan_tick() before StrategyEngine.process() with rejection logging**
+- **Phase 5A — record_quality() in ScanMetrics for rejection analytics**
+- **Phase 5A — 273 tests passing (32 quality + 6 scan_metrics added), zero regressions**
 
 ## Kite Connect Status
 
@@ -164,12 +171,12 @@ Tests exist in `tests/ops_api/` and `tests/trading_bot/` for both subsystems:
 
 | Test Module | Coverage |
 |-------------|----------|
-| `tests/ops_api/` | Controls, DB, execution, health, notifier, validation, webhook, strategies, risk engine, scan metrics, scheduler, position manager, indicators, scanners |
+| `tests/ops_api/` | Controls, DB, execution, health, notifier, validation, webhook, strategies, risk engine, scan metrics, scheduler, position manager, indicators, scanners, quality |
 | `tests/trading_bot/` | Config, data, main loop, risk, state, strategies |
 
 Run with: `uv run pytest tests/ops_api/ tests/trading_bot/`
 
-**Phase 4 test count:** 241 total in tests/ops_api/ (51 added: 30 position manager, 14 DB CRUD, 7 risk engine position-aware)
+**Phase 4 + 5A test count:** 273 total in tests/ops_api/ (62 added: 30 position manager, 14 DB CRUD, 7 risk engine position-aware, 32 quality, 6 scan_metrics tracking)
 
 ## Next Steps (Recommended Priority)
 
@@ -207,11 +214,19 @@ Run with: `uv run pytest tests/ops_api/ tests/trading_bot/`
 - [x] TypeScript types — PositionState, PortfolioSnapshot interfaces
 - [x] 241 tests passing (51 new), zero regressions
 
-### Phase 5 (Next — Breakout Quality + Regime Filtering)
-1. **Breakout quality scoring** — rate breakouts by volume confirmation, candle strength, market context
-2. **Regime filtering** — detect trending vs ranging markets, filter trades by regime
-3. **Scanner selectivity** — reduce false signals, add multi-timeframe confirmation
-4. **Autonomous session lifecycle** — self-contained trading sessions with entry/exit/cleanup
-5. **Disciplined execution** — enforce pre-defined trade plans, reduce ad-hoc signals
-6. **WebSocket streaming** — replace polling with streaming for scanner data
-7. **Analytics charts** — equity curve, PnL by strategy, rejection stats in frontend
+### Phase 5A ✓ DONE (2026-05-21)
+- [x] Breakout quality scoring module — 6 dimensions (RVOL, candle strength, VWAP alignment, EMA trend, range expansion, time-window quality)
+- [x] QualityScore dataclass — component scores (0.0-1.0), weighted total, accept/reject gate, reason string
+- [x] QualityConfig — tunable thresholds and weights (default sum to 1.0)
+- [x] Pure functions — no state, no side effects, no DB access
+- [x] Integration in _scan_tick() — quality check before StrategyEngine.process()
+- [x] Rejection analytics — record_quality() in ScanMetrics for dashboard visibility
+- [x] 32 quality tests + 273 total, zero regressions
+
+### Phase 5B (Next — Regime Filtering + Scanner Selectivity)
+1. **Regime filtering** — detect trending vs ranging markets, filter trades by regime
+2. **Scanner selectivity** — reduce false signals, add multi-timeframe confirmation
+3. **Autonomous session lifecycle** — self-contained trading sessions with entry/exit/cleanup
+4. **Disciplined execution** — enforce pre-defined trade plans, reduce ad-hoc signals
+5. **WebSocket streaming** — replace polling with streaming for scanner data
+6. **Analytics charts** — equity curve, PnL by strategy, rejection stats in frontend
