@@ -66,6 +66,11 @@ The following have been operationally verified through soak tests, concurrency t
 - **Phase 5B — Integration in _scan_tick() after quality, before StrategyEngine.process()**
 - **Phase 5B — record_regime() in ScanMetrics for classification analytics**
 - **Phase 5B — 304 tests passing (31 regime), zero regressions**
+- **Phase 5C — Multi-timeframe confirmation module (6 dimensions + 2 hard gates)
+- **Phase 5C — confirm_signal() with alignment, confidence, countertrend/exhaustion rejection
+- **Phase 5C — 15m bar fetch + confirmation gate in _scan_tick()
+- **Phase 5C — record_confirmation() in ScanMetrics for rejection analytics
+- **Phase 5C — 346 tests passing (42 confirmation), zero regressions**
 
 ## Kite Connect Status
 
@@ -176,12 +181,12 @@ Tests exist in `tests/ops_api/` and `tests/trading_bot/` for both subsystems:
 
 | Test Module | Coverage |
 |-------------|----------|
-| `tests/ops_api/` | Controls, DB, execution, health, notifier, validation, webhook, strategies, risk engine, scan metrics, scheduler, position manager, indicators, scanners, quality, regime |
+| `tests/ops_api/` | Controls, DB, execution, health, notifier, validation, webhook, strategies, risk engine, scan metrics, scheduler, position manager, indicators, scanners, quality, regime, confirmation |
 | `tests/trading_bot/` | Config, data, main loop, risk, state, strategies |
 
 Run with: `uv run pytest tests/ops_api/ tests/trading_bot/`
 
-**Phase 4 + 5A + 5B test count:** 304 total in tests/ops_api/ (93 added: 30 position manager, 14 DB CRUD, 7 risk engine position-aware, 32 quality, 6 scan_metrics tracking, 31 regime)
+**Phase 4 + 5A + 5B + 5C test count:** 346 total in tests/ops_api/ (135 added: 30 position manager, 14 DB CRUD, 7 risk engine position-aware, 32 quality, 6 scan_metrics tracking, 31 regime, 42 confirmation)
 
 ## Next Steps (Recommended Priority)
 
@@ -232,6 +237,11 @@ Run with: `uv run pytest tests/ops_api/ tests/trading_bot/`
 - **Phase 5B — detect_regime() with confidence score, reasons, metrics snapshot**
 - **Phase 5B — record_regime() in ScanMetrics for classification analytics**
 - **Phase 5B — 304 tests passing (31 regime), zero regressions**
+- **Phase 5C — Multi-timeframe confirmation (HTF EMA, VWAP agreement, candle structure, direction, countertrend, exhaustion)**
+- **Phase 5C — confirm_signal() with alignment score, confidence, hard gates**
+- **Phase 5C — Integration in _scan_tick() after regime, before StrategyEngine.process()**
+- **Phase 5C — record_confirmation() in ScanMetrics for rejection analytics**
+- **Phase 5C — 346 tests passing (42 confirmation), zero regressions**
 
 ### Phase 5B ✓ DONE (2026-05-21)
 - [x] Regime detection module — 4 regimes (TREND, RANGE, VOLATILE, DEAD)
@@ -244,9 +254,23 @@ Run with: `uv run pytest tests/ops_api/ tests/trading_bot/`
 - [x] Regime analytics — record_regime() in ScanMetrics for dashboard visibility
 - [x] 31 regime tests + 304 total, zero regressions
 
-### Phase 5C (Next — Scanner Selectivity + Advanced Features)
-1. **Scanner selectivity** — reduce false signals, add multi-timeframe confirmation
-3. **Autonomous session lifecycle** — self-contained trading sessions with entry/exit/cleanup
-4. **Disciplined execution** — enforce pre-defined trade plans, reduce ad-hoc signals
-5. **WebSocket streaming** — replace polling with streaming for scanner data
-6. **Analytics charts** — equity curve, PnL by strategy, rejection stats in frontend
+### Phase 5C ✓ DONE (2026-05-21)
+- [x] Multi-timeframe confirmation module — 6 confirmation dimensions
+- [x] HTF EMA alignment — score by EMA separation and direction agreement with signal
+- [x] VWAP agreement — both timeframes VWAP consistent with signal direction
+- [x] HTF candle structure — body strength, wick ratio, close position
+- [x] Direction agreement — LTF and HTF price slopes aligned
+- [x] Countertrend hard gate — reject when HTF strongly opposes signal
+- [x] Exhaustion detection — LTF bar range >> HTF avg range + tiny body → reject
+- [x] ConfirmationState dataclass — accepted, confidence, alignment_score, reason, metrics
+- [x] ConfirmationConfig — tunable weights (sum to 1.0), thresholds for all gates
+- [x] Pure functions — no state, no side effects, no DB access
+- [x] Integration in _scan_tick() — 15m bars fetch + confirmation after regime filter
+- [x] Confirmation analytics — record_confirmation() in ScanMetrics
+- [x] 42 confirmation tests + 346 total, zero regressions
+
+### Phase 5D (Next — Scanner Selectivity + Advanced Features)
+1. **Autonomous session lifecycle** — self-contained trading sessions with entry/exit/cleanup
+2. **Disciplined execution** — enforce pre-defined trade plans, reduce ad-hoc signals
+3. **WebSocket streaming** — replace polling with streaming for scanner data
+4. **Analytics charts** — equity curve, PnL by strategy, rejection stats in frontend
