@@ -16,6 +16,9 @@ class ScanMetrics:
     rejection_reasons: dict[str, int] = field(default_factory=dict)
     regime_classifications: dict[str, int] = field(default_factory=dict)
     regime_rejected: int = 0
+    confirmation_accepted: int = 0
+    confirmation_rejected: int = 0
+    confirmation_reasons: dict[str, int] = field(default_factory=dict)
     scanner_hits: dict[str, int] = field(default_factory=dict)
     cache_hits: int = 0
     cache_misses: int = 0
@@ -44,6 +47,14 @@ class ScanMetrics:
             self.regime_classifications[regime] = self.regime_classifications.get(regime, 0) + 1
             if not breakout_allowed:
                 self.regime_rejected += 1
+
+    def record_confirmation(self, accepted: bool, reason: str) -> None:
+        with self._lock:
+            if accepted:
+                self.confirmation_accepted += 1
+            else:
+                self.confirmation_rejected += 1
+                self.confirmation_reasons[reason] = self.confirmation_reasons.get(reason, 0) + 1
 
     def record_cache_hit(self) -> None:
         with self._lock:
@@ -80,6 +91,9 @@ class ScanMetrics:
                 "rejection_reasons": dict(self.rejection_reasons),
                 "regime_classifications": dict(self.regime_classifications),
                 "regime_rejected": self.regime_rejected,
+                "confirmation_accepted": self.confirmation_accepted,
+                "confirmation_rejected": self.confirmation_rejected,
+                "confirmation_reasons": dict(self.confirmation_reasons),
                 "scanner_hits": dict(self.scanner_hits),
                 "cache_hits": self.cache_hits,
                 "cache_misses": self.cache_misses,
