@@ -61,6 +61,11 @@ The following have been operationally verified through soak tests, concurrency t
 - **Phase 5A — Integration in _scan_tick() before StrategyEngine.process() with rejection logging**
 - **Phase 5A — record_quality() in ScanMetrics for rejection analytics**
 - **Phase 5A — 273 tests passing (32 quality + 6 scan_metrics added), zero regressions**
+- **Phase 5B — Regime detection module (TREND, RANGE, VOLATILE, DEAD with 5 detection dimensions)**
+- **Phase 5B — detect_regime() with confidence, reasons, breakout_allowed gate**
+- **Phase 5B — Integration in _scan_tick() after quality, before StrategyEngine.process()**
+- **Phase 5B — record_regime() in ScanMetrics for classification analytics**
+- **Phase 5B — 304 tests passing (31 regime), zero regressions**
 
 ## Kite Connect Status
 
@@ -171,12 +176,12 @@ Tests exist in `tests/ops_api/` and `tests/trading_bot/` for both subsystems:
 
 | Test Module | Coverage |
 |-------------|----------|
-| `tests/ops_api/` | Controls, DB, execution, health, notifier, validation, webhook, strategies, risk engine, scan metrics, scheduler, position manager, indicators, scanners, quality |
+| `tests/ops_api/` | Controls, DB, execution, health, notifier, validation, webhook, strategies, risk engine, scan metrics, scheduler, position manager, indicators, scanners, quality, regime |
 | `tests/trading_bot/` | Config, data, main loop, risk, state, strategies |
 
 Run with: `uv run pytest tests/ops_api/ tests/trading_bot/`
 
-**Phase 4 + 5A test count:** 273 total in tests/ops_api/ (62 added: 30 position manager, 14 DB CRUD, 7 risk engine position-aware, 32 quality, 6 scan_metrics tracking)
+**Phase 4 + 5A + 5B test count:** 304 total in tests/ops_api/ (93 added: 30 position manager, 14 DB CRUD, 7 risk engine position-aware, 32 quality, 6 scan_metrics tracking, 31 regime)
 
 ## Next Steps (Recommended Priority)
 
@@ -222,10 +227,25 @@ Run with: `uv run pytest tests/ops_api/ tests/trading_bot/`
 - [x] Integration in _scan_tick() — quality check before StrategyEngine.process()
 - [x] Rejection analytics — record_quality() in ScanMetrics for dashboard visibility
 - [x] 32 quality tests + 273 total, zero regressions
+- **Phase 5B — Regime detection (TREND, RANGE, VOLATILE, DEAD) with breakout gating**
+- **Phase 5B — 5 detection dimensions: EMA separation, VWAP slope, ATR ratio, range ratio, candle overlap**
+- **Phase 5B — detect_regime() with confidence score, reasons, metrics snapshot**
+- **Phase 5B — record_regime() in ScanMetrics for classification analytics**
+- **Phase 5B — 304 tests passing (31 regime), zero regressions**
 
-### Phase 5B (Next — Regime Filtering + Scanner Selectivity)
-1. **Regime filtering** — detect trending vs ranging markets, filter trades by regime
-2. **Scanner selectivity** — reduce false signals, add multi-timeframe confirmation
+### Phase 5B ✓ DONE (2026-05-21)
+- [x] Regime detection module — 4 regimes (TREND, RANGE, VOLATILE, DEAD)
+- [x] 5 detection dimensions — EMA separation, VWAP slope, ATR expansion/compression, range ratio, candle overlap
+- [x] DetectRegime dataclass — regime, confidence, reasons, breakout_allowed flag, metrics snapshot
+- [x] RegimeConfig — tunable thresholds for all detection dimensions
+- [x] Pure functions — no state, no side effects, no DB access
+- [x] Integration in _scan_tick() — regime filter after quality scoring, before StrategyEngine.process()
+- [x] Breakout gating — TREND/VOLATILE allowed, RANGE/DEAD rejected
+- [x] Regime analytics — record_regime() in ScanMetrics for dashboard visibility
+- [x] 31 regime tests + 304 total, zero regressions
+
+### Phase 5C (Next — Scanner Selectivity + Advanced Features)
+1. **Scanner selectivity** — reduce false signals, add multi-timeframe confirmation
 3. **Autonomous session lifecycle** — self-contained trading sessions with entry/exit/cleanup
 4. **Disciplined execution** — enforce pre-defined trade plans, reduce ad-hoc signals
 5. **WebSocket streaming** — replace polling with streaming for scanner data
