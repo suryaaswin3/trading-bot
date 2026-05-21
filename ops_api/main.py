@@ -102,6 +102,13 @@ def _build_scan_callback(
                     if result.has_signal and result.signal is not None:
                         if metrics:
                             metrics.record_signal(scanner.strategy_id)
+                        from ops_api.quality import score_breakout
+                        qs = score_breakout(bars, result.signal)
+                        if metrics:
+                            metrics.record_quality(qs.accepted, qs.reason)
+                        if not qs.accepted:
+                            logger.info("Quality reject {} {}: score={:.2f} reason={}", symbol, strategy_name, qs.total, qs.reason)
+                            continue
                         signal_dict = result.signal.model_dump()
                         signal_dict["id"] = str(uuid4())
                         signal_dict["normalized_at"] = datetime.utcnow().isoformat()
