@@ -109,6 +109,13 @@ def _build_scan_callback(
                         if not qs.accepted:
                             logger.info("Quality reject {} {}: score={:.2f} reason={}", symbol, strategy_name, qs.total, qs.reason)
                             continue
+                        from ops_api.regime import detect_regime
+                        rs = detect_regime(bars)
+                        if metrics:
+                            metrics.record_regime(rs.regime, rs.breakout_allowed)
+                        if not rs.breakout_allowed:
+                            logger.info("Regime reject {} {}: regime={} conf={:.2f} reasons={}", symbol, strategy_name, rs.regime, rs.confidence, rs.reasons)
+                            continue
                         signal_dict = result.signal.model_dump()
                         signal_dict["id"] = str(uuid4())
                         signal_dict["normalized_at"] = datetime.utcnow().isoformat()
