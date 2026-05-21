@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 class ScanMetrics:
     total_scans: int = 0
     signals_found: int = 0
+    signals_accepted: int = 0
+    signals_rejected: int = 0
+    rejection_reasons: dict[str, int] = field(default_factory=dict)
     scanner_hits: dict[str, int] = field(default_factory=dict)
     cache_hits: int = 0
     cache_misses: int = 0
@@ -38,6 +41,14 @@ class ScanMetrics:
         with self._lock:
             self.cache_hits += 1
 
+    def record_quality(self, accepted: bool, reason: str) -> None:
+        with self._lock:
+            if accepted:
+                self.signals_accepted += 1
+            else:
+                self.signals_rejected += 1
+                self.rejection_reasons[reason] = self.rejection_reasons.get(reason, 0) + 1
+
     def record_cache_miss(self) -> None:
         with self._lock:
             self.cache_misses += 1
@@ -56,6 +67,9 @@ class ScanMetrics:
             return {
                 "total_scans": self.total_scans,
                 "signals_found": self.signals_found,
+                "signals_accepted": self.signals_accepted,
+                "signals_rejected": self.signals_rejected,
+                "rejection_reasons": dict(self.rejection_reasons),
                 "scanner_hits": dict(self.scanner_hits),
                 "cache_hits": self.cache_hits,
                 "cache_misses": self.cache_misses,
