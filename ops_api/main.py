@@ -116,6 +116,20 @@ def _build_scan_callback(
                         if not rs.breakout_allowed:
                             logger.info("Regime reject {} {}: regime={} conf={:.2f} reasons={}", symbol, strategy_name, rs.regime, rs.confidence, rs.reasons)
                             continue
+                        from ops_api.confirmation import confirm_signal
+                        conf_bars = cache.get(symbol, "15")
+                        if conf_bars is None and provider is not None:
+                            if metrics: metrics.record_cache_miss()
+                            conf_bars = provider.fetch(symbol, interval="15", count=100)
+                            if conf_bars:
+                                cache.set(symbol, "15", conf_bars)
+                        if conf_bars:
+                            cs = confirm_signal(bars, conf_bars, result.signal)
+                            if metrics:
+                                metrics.record_confirmation(cs.accepted, cs.reason)
+                            if not cs.accepted:
+                                logger.info("Confirmation reject {} {}: alignment={:.2f} reason={}", symbol, strategy_name, cs.alignment_score, cs.reason)
+                                continue
                         signal_dict = result.signal.model_dump()
                         signal_dict["id"] = str(uuid4())
                         signal_dict["normalized_at"] = datetime.utcnow().isoformat()
