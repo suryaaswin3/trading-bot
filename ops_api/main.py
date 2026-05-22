@@ -537,19 +537,20 @@ async def control_action(
 
 def _get_dashboard_data() -> dict[str, Any]:
     """Aggregated dashboard payload used by both REST and WebSocket endpoints."""
-    bot_status = db.get_bot_status() or {}  # type: ignore[union-attr]
-    latest_hb = db.get_latest_heartbeat() or {}  # type: ignore[union-attr]
-    recent_orders = db.get_recent_orders(limit=10)  # type: ignore[union-attr]
-    recent_alerts = db.get_recent_alerts(limit=10)  # type: ignore[union-attr]
-    recent_signals = db.get_recent_signals(limit=20)  # type: ignore[union-attr]
-    recent_validations = db.get_recent_validations(limit=10)  # type: ignore[union-attr]
-    recent_events = db.get_recent_events(limit=20)  # type: ignore[union-attr]
-    recent_errors = db.get_recent_errors(limit=10)  # type: ignore[union-attr]
-    position_history = db.get_position_history(limit=500)  # type: ignore[union-attr]
-    equity_curve = db.get_equity_curve(limit=500)  # type: ignore[union-attr]
-    kill_switch = db.get_kill_switch_state()  # type: ignore[union-attr]
-    kill_switch_history = db.get_kill_switch_history(limit=10)  # type: ignore[union-attr]
-    recent_notifications = db.get_recent_notifications(limit=10)  # type: ignore[union-attr]
+    assert db is not None, "_get_dashboard_data called before db initialised"
+    bot_status = db.get_bot_status() or {}
+    latest_hb = db.get_latest_heartbeat() or {}
+    recent_orders = db.get_recent_orders(limit=10)
+    recent_alerts = db.get_recent_alerts(limit=10)
+    recent_signals = db.get_recent_signals(limit=20)
+    recent_validations = db.get_recent_validations(limit=10)
+    recent_events = db.get_recent_events(limit=20)
+    recent_errors = db.get_recent_errors(limit=10)
+    position_history = db.get_position_history(limit=500)
+    equity_curve = db.get_equity_curve(limit=500)
+    kill_switch = db.get_kill_switch_state()
+    kill_switch_history = db.get_kill_switch_history(limit=10)
+    recent_notifications = db.get_recent_notifications(limit=10)
 
     _stale_hb_seconds = 300
     _hb_ts = latest_hb.get("timestamp", "") if latest_hb else ""
@@ -594,13 +595,13 @@ def _get_dashboard_data() -> dict[str, Any]:
         "telegram_healthy": notifier.healthy if notifier and notifier.healthy else None,
         "recent_notifications": recent_notifications,
         "scanner_metrics": scan_metrics.snapshot() if scan_metrics is not None else {},
-        "portfolio": db.get_portfolio_summary(),  # type: ignore[union-attr]
+        "portfolio": db.get_portfolio_summary(),
         "positions": [dataclasses.asdict(p) for p in position_manager.get_all_positions()] if position_manager is not None else [],
         "portfolio_snapshot": dataclasses.asdict(position_manager.get_portfolio()) if position_manager is not None else {},
         # Analytics fields for charts
-        "pnl_by_strategy": db.get_pnl_by_strategy(limit=1000),  # type: ignore[union-attr]
-        "rejection_stats": db.get_rejection_stats(limit=100),  # type: ignore[union-attr]
-        "daily_pnl_history": db.get_daily_pnl_history(limit=30),  # type: ignore[union-attr]
+        "pnl_by_strategy": db.get_pnl_by_strategy(limit=1000),
+        "rejection_stats": db.get_rejection_stats(limit=100),
+        "daily_pnl_history": db.get_daily_pnl_history(limit=30),
     }
 
 
