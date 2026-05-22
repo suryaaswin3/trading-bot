@@ -147,9 +147,15 @@ Key design:
 
 **Three systemd services:**
 
-1. **ops-api.service** — Runs 24/7, FastAPI on port 8080
-2. **dashboard.service** — Runs 24/7, Streamlit on port 8501 (being replaced)
-3. **trading-bot.service** — Triggered by timer, Mon-Fri 9:00 AM IST
+1. **ops-api.service** — Runs 24/7, FastAPI on port 8080, OA_ROLE=all (scanner + API)
+2. **scanner.service** — Standalone scanner process (`scanner_runner.py`), market-aware loop
+3. **dashboard.service** — Runs 24/7, Streamlit on port 8501 (being replaced)
+
+**Process separation:**
+- OA_ROLE env var controls which component starts: `all` (legacy, both), `api` (API only), `scanner` (scanner only)
+- Scanner runs as independent systemd service sharing SQLite WAL-mode DB
+- Market clock (`ops_api/market_clock.py`) drives scanner scheduling: PRE_MARKET wait → TRADING scan → POST_MARKET sleep
+- scanner_status table in DB provides heartbeat for API health endpoint
 
 **Systemd timer:** `trading-bot.timer` — Mon-Fri 9:00 AM IST Asia/Kolkata
 
