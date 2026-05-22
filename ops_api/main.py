@@ -45,6 +45,9 @@ from ops_api.validation import ValidationPipeline
 from ops_api.webhook import handle_tradingview_webhook
 from ops_api.session import SessionManager
 from ops_api.trade_plan import get_active_plan
+from ops_api.ranking import rank_symbols, RankingConfig
+from ops_api.timing import check_entry_timing, TimingConfig
+from ops_api.trade_analytics import TradeAnalytics
 
 # ── Globals (set during lifespan) ────────────────────────────────────────
 
@@ -58,6 +61,9 @@ scanner_scheduler: ScanScheduler | None = None
 scan_metrics: ScanMetrics | None = None
 position_manager: PositionManager | None = None
 session_manager: SessionManager | None = None
+trade_analytics: TradeAnalytics | None = None
+ranking_config: RankingConfig | None = None
+timing_config: TimingConfig | None = None
 _shutdown = False
 
 
@@ -76,6 +82,9 @@ def _build_scan_callback(
     strategy_engine: StrategyEngine,
     db: DatabaseManager,
     cache: OHLCVCache,
+    analytics: TradeAnalytics | None = None,
+    rank_cfg: RankingConfig | None = None,
+    timing_cfg: TimingConfig | None = None,
     metrics: ScanMetrics | None = None,
 ) -> Callable[[], None]:
     """Build the scanner callback closure for the scheduler tick."""
@@ -89,7 +98,18 @@ def _build_scan_callback(
         if metrics:
             metrics.record_scan_start()
         plan = get_active_plan()
+
+        # ── Phase 7: Rank symbols, scan only top-N ──────────────────────
+        bars_by_symbol: dict[str, list[Any]] = {}
         for symbol in config.scanner_symbols:
+            bars = cache.get(symbol, "60")
+            if bars is not None and len(bars) > 20:
+                bars_by_symbol[symbol] = bars
+
+        ranked = rank_symbols(bars_by_symbol, rank_cfg) if bars_by_symbol else []
+        scan_symbols = [r.symbol for r in ranked] or config.scanner_symbols
+
+        for symbol in scan_symbols:
             try:
                 bars = cache.get(symbol, "60")
                 if bars is not None:
@@ -135,6 +155,13 @@ def _build_scan_callback(
                             if not cs.accepted:
                                 logger.info("Confirmation reject {} {}: alignment={:.2f} reason={}", symbol, strategy_name, cs.alignment_score, cs.reason)
                                 continue
+
+                        # ── Phase 7: Entry timing refinement ─────────────────────
+                        timing = check_entry_timing(bars, result.signal.side, timing_cfg)
+                        if not timing.allowed:
+                            logger.info("Timing reject {} {}: method={} reason={}", symbol, strategy_name, timing.method, timing.reason)
+                            continue
+
                         signal_dict = result.signal.model_dump()
                         signal_dict["id"] = str(uuid4())
                         signal_dict["normalized_at"] = datetime.utcnow().isoformat()
@@ -157,7 +184,7 @@ def _build_scan_callback(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise DB, config, and services on startup."""
-    global config, db, validator, executor, notifier, strategy_engine, scanner_scheduler, scan_metrics, position_manager, session_manager
+    global config, db, validator, executor, notifier, strategy_engine, scanner_scheduler, scan_metrics, position_manager, session_manager, trade_analytics, ranking_config, timing_config
 
     load_dotenv()
     config = load_ops_config()
@@ -220,6 +247,11 @@ async def lifespan(app: FastAPI):
 
     executor = ExecutionEngine(config, db, kite_client=kite_client, position_manager=position_manager)
 
+    # ── Phase 7: Trade analytics + ranking + timing config ───────────────
+    trade_analytics = TradeAnalytics()
+    ranking_config = RankingConfig()
+    timing_config = TimingConfig()
+
     # ── Strategy Engine (Phase 1) ────────────────────────────────
     _registry = StrategyRegistry()
     _registry.register(DefaultStrategy())
@@ -247,6 +279,9 @@ async def lifespan(app: FastAPI):
             strategy_engine=strategy_engine,
             db=db,
             cache=_market_cache,
+            analytics=trade_analytics,
+            rank_cfg=ranking_config,
+            timing_cfg=timing_config,
             metrics=scan_metrics,
         )
         scanner_scheduler = ScanScheduler(
@@ -602,6 +637,8 @@ def _get_dashboard_data() -> dict[str, Any]:
         "pnl_by_strategy": db.get_pnl_by_strategy(limit=1000),
         "rejection_stats": db.get_rejection_stats(limit=100),
         "daily_pnl_history": db.get_daily_pnl_history(limit=30),
+        # Phase 7 analytics
+        "trade_analytics": trade_analytics.summary() if trade_analytics is not None else {},
     }
 
 

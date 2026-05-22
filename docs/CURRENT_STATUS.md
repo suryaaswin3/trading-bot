@@ -5,11 +5,11 @@ description: Current operational status of the trading platform — verified sys
 
 # Trading Platform — CURRENT STATUS
 
-*Last updated: 2026-05-21*
+*Last updated: 2026-05-22*
 
 ## Operational Status
 
-**Overall: RUNNING — PAPER MODE ONLY — VPS DEPLOYED**
+**Overall: RUNNING — PAPER MODE ONLY — VPS DEPLOYED — PHASE 7 COMPLETE**
 
 | Component | Status | Notes |
 |-----------|--------|-------|
@@ -201,7 +201,7 @@ Tests exist in `tests/ops_api/` and `tests/trading_bot/` for both subsystems:
 
 Run with: `uv run pytest tests/ops_api/ tests/trading_bot/`
 
-**Phase 4 + 5A + 5B + 5C test count:** 346 total in tests/ops_api/ (135 added: 30 position manager, 14 DB CRUD, 7 risk engine position-aware, 32 quality, 6 scan_metrics tracking, 31 regime, 42 confirmation)
+**Phase 4 → 7 test count:** 530 total in tests/ops_api/ (184 added across Phase 5D → 7: 11 session, 44 confirmation, 20 ranking, 21 options, 53 exits, 39 trade_analytics, 33 timing)
 
 ## Next Steps (Recommended Priority)
 
@@ -291,6 +291,34 @@ Run with: `uv run pytest tests/ops_api/ tests/trading_bot/`
 - [x] Trade plan persistence — upsert/read from DB on each scanner tick
 - [x] WebSocket streaming — replace polling with streaming for scanner data
 - [x] Analytics charts — equity curve, PnL by strategy, rejection stats in frontend
+
+### Phase 6 ✓ DONE (2026-05-21 VPS Deployment)
+
+### Phase 7 ✓ DONE (2026-05-22 Execution Intelligence)
+- [x] Dynamic symbol ranking — ops_api/ranking.py (6 dimensions: RVOL, ATR expansion, trend strength, breakout quality proxy, liquidity, directional efficiency)
+- [x] RankingConfig — tunable weights (auto-normalised to 1.0), top-N and min-score filtering
+- [x] rank_symbols() — pure function, BarSnapshot-compatible, returns sorted SymbolRank list
+- [x] Integration in _scan_tick() — ranks all symbols, scanner only processes top-ranked
+- [x] Options strike selection — ops_api/options.py (decision tree: expiry gate → liquidity gate → ATM/ITM → premium filter)
+- [x] OptionsConfig — volatile threshold, ATM step, ITM buffer, premium range, OI/volume ratio
+- [x] select_strike() — pure function, returns StrikeSelection with accept/reject
+- [x] Execution timing refinement — ops_api/timing.py (hard blocks: oversized candle, exhausted breakout; preferred: retest, pullback, micro consolidation; fallback: immediate)
+- [x] TimingConfig — 12 tunable thresholds for all detection dimensions
+- [x] check_entry_timing() — pure function, returns TimingResult with allowed, method, preferred_entry
+- [x] Integration in _scan_tick() — timing gate after confirmation, before signal dispatch
+- [x] Advanced exits — ops_api/exits.py (6 strategies: trailing stop, break-even, chandelier, momentum fade, time-based, VWAP loss-of-control)
+- [x] ExitConfig — tunable thresholds for all 6 strategies
+- [x] evaluate_exits() — pure function, returns sorted ExitSignal list by priority
+- [x] Trade analytics — ops_api/trade_analytics.py (TradeRecord dataclass, TradeAnalytics thread-safe accumulator)
+- [x] Win rate breakdowns — by regime, score bucket (low/medium/high), symbol, session window, alignment bucket (weak/moderate/strong)
+- [x] MAE/MFE tracking — avg_mae, avg_mfe, mae_mfe_ratio in ATR units
+- [x] Best symbols and session windows — ranked by PnL and win rate
+- [x] Rejection analytics — rejection_summary() aggregates reason counts from ScanMetrics
+- [x] Integration in main.py — TradeAnalytics wired into dashboard data
+- [x] 530 tests passing (161 Phase 5D+6+7 added), zero regressions
+- [x] All new modules: dataclass Config + dataclass Result/State + pure aggregation function pattern
+- [x] All new modules: BarSnapshot-compatible via _normalize_bars()
+- [x] All new modules: deterministic, stateless, no DB access, no architecture changes
 
 ### Phase 6 ✓ DONE (2026-05-21 VPS Deployment)
 - [x] Market clock — ops_api/market_clock.py with IST, 6 phases, NSE holiday calendar
