@@ -9,19 +9,21 @@ description: Current operational status of the trading platform — verified sys
 
 ## Operational Status
 
-**Overall: RUNNING — PAPER MODE ONLY**
+**Overall: RUNNING — PAPER MODE ONLY — VPS DEPLOYED**
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Trading bot | Running | Polling loop, paper trades only |
-| Ops API (FastAPI) | Running | Port 8080, 24/7 |
-| SQLite DB | Operational | WAL mode, thread-safe |
+| Ops API (FastAPI) | Running | VPS port 8080, 24/7, systemd-managed |
+| Scanner process | Running | Standalone process, POST_MARKET phase, systemd-managed |
+| SQLite DB | Operational | WAL mode, shared between API + scanner |
 | Heartbeat system | Operational | Bot → API heartbeat flow verified |
 | Kill switch | Operational | Activate/reset via API |
-| Telegram notifier | Operational | Alerts sent on startup, kill switch, control actions |
-| Kite Connect | Connected | User MMY806, profile/margins/data verified |
-| Streamlit dashboard | Running but unstable | Being replaced — do not invest further |
-| Next.js frontend (Phase 1) | COMPLETE | Initialized, API layer, status bar, dark terminal theme |
+| Telegram notifier | Operational | Alerts on startup, shutdown, crash, live warning |
+| Kite Connect | Connected (local) | User MMY806; VPS has no valid token yet |
+| Streamlit dashboard | Replaced | Phase 2 frontend covers all dashboard needs |
+| Next.js frontend (Phases 1-3) | COMPLETE | 6 panels, WebSocket streaming, analytics charts |
+| Phase 5D — Scanner Selectivity | COMPLETE | Session lifecycle, trade plans, WebSocket, analytics |
+| Phase 6 — VPS Deployment | COMPLETE | 3 systemd services, market clock, role separation |
 
 ## Verified Working Systems
 
@@ -43,8 +45,17 @@ The following have been operationally verified through soak tests, concurrency t
 - Kite market data access (LTP, historical candles, instruments)
 - Broker connectivity (KiteConnect profile/margins/instruments endpoints)
 - Access token persistence (stored in env, refreshed daily via cron)
-- Systemd deployment (all three services operational)
-- VPS runtime behavior (graceful shutdown, restarts, log rotation)
+- Systemd deployment (3 services: ops-api, scanner, dashboard — all running)
+- VPS runtime behavior (graceful shutdown, restarts, log rotation, SIGTERM handling)
+- Scanner process separation (OA_ROLE gating, standalone scanner_runner.py)
+- Market clock (IST timezone, 6 phases, NSE holiday calendar)
+- DB-based scanner heartbeat (status table updated per tick)
+- Cooldown state persistence (survives process restarts)
+- Trade plan persistence (read from DB on each scanner tick)
+- Telegram alerts for production (live_warning, shutdown, crash, daily_summary)
+- Memory health check (/proc/self/status VmRSS)
+- Backup script (SQLite .backup + gzip, 30-day retention)
+- Health check utility (API, services, log errors, disk, DB)
 - **Phase 4 — PositionManager lifecycle (open/adjust/reduce/close/reverse with weighted avg entry)**
 - **Phase 4 — Realized PnL computation (LONG + SHORT direction-aware)**
 - **Phase 4 — MTM (unrealized PnL isolation, no realized_pnl mutation)**
@@ -163,6 +174,10 @@ The following have been operationally verified through soak tests, concurrency t
 
 6. **Paper order ID reset** — `PAPER_ORDER_ID` global in `trading_bot/main.py` resets on restart. Not an issue for paper but would cause confusion in persistent audit.
 
+7. **Kite access token on VPS** — VPS .env has no valid Kite API credentials. Need TOTP-based daily token refresh or manual credentials.env setup. Scanner reports `kites_connect` warn on health endpoint.
+
+8. **GitHub push pending** — Phase 5D + 6 code committed locally (ea26ece) but not pushed. No GitHub credentials configured. User needs to `git push origin main`.
+
 ## Current Risks
 
 | Risk | Severity | Mitigation |
@@ -269,8 +284,29 @@ Run with: `uv run pytest tests/ops_api/ tests/trading_bot/`
 - [x] Confirmation analytics — record_confirmation() in ScanMetrics
 - [x] 42 confirmation tests + 346 total, zero regressions
 
-### Phase 5D (Next — Scanner Selectivity + Advanced Features)
-1. **Autonomous session lifecycle** — self-contained trading sessions with entry/exit/cleanup
-2. **Disciplined execution** — enforce pre-defined trade plans, reduce ad-hoc signals
-3. **WebSocket streaming** — replace polling with streaming for scanner data
-4. **Analytics charts** — equity curve, PnL by strategy, rejection stats in frontend
+### Phase 5D ✓ DONE (2026-05-21)
+- [x] Autonomous session lifecycle — SessionManager with start/end/cleanup
+- [x] Session state persistence — persist_state() saves to DB, recover_cooldown() on restart
+- [x] Metadata persistence fix — start_session()/end_session() preserve state dict
+- [x] Trade plan persistence — upsert/read from DB on each scanner tick
+- [x] WebSocket streaming — replace polling with streaming for scanner data
+- [x] Analytics charts — equity curve, PnL by strategy, rejection stats in frontend
+
+### Phase 6 ✓ DONE (2026-05-21 VPS Deployment)
+- [x] Market clock — ops_api/market_clock.py with IST, 6 phases, NSE holiday calendar
+- [x] Config extensions — role, live_trading, log_dir, auto_market_detection fields
+- [x] DB schema extensions — cooldown_state, trade_plans, scanner_status tables
+- [x] Session recovery — SessionManager.persist_state(), recover_cooldown()
+- [x] Notifier production alerts — alert_live_warning, shutdown, crash, daily_summary
+- [x] Health check updates — scanner reads from DB, check_memory()
+- [x] Scanner runner — standalone scanner_runner.py with market-aware scheduling
+- [x] API role gating — OA_ROLE=all/api/scanner gates scanner init in main.py
+- [x] 3 systemd services — ops-api.service, scanner.service, dashboard.service
+- [x] Deployment artifacts — install.sh, update.sh, healthcheck.sh, backup.sh
+- [x] Legacy cleanup — removed deploy.sh, vps_*.py, systemd/ directory
+- [x] VPS deployment — both services running, health endpoint operational, boot-enabled
+
+## Remaining After Deployment
+- [ ] GitHub push — user needs to `git push origin main` from local
+- [ ] Kite access token on VPS — set up TOTP daily refresh or manual credentials
+- [ ] Morning verification — confirm scanner transitions POST_MARKET → PRE_MARKET → TRADING at 9:15 IST
